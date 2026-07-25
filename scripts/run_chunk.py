@@ -16,6 +16,7 @@ import os
 import random
 import sys
 from pathlib import Path
+from typing import Any, Dict
 
 
 # Make the project root importable regardless of how this script is invoked.
@@ -56,6 +57,66 @@ def _final_equity(backtest_result):
         return float(ec[-1]) if len(ec) else 0.0
     except Exception:
         return 0.0
+
+
+def _extract_metrics_summary(metrics: Dict[str, Any]) -> Dict[str, Any]:
+    """Pull scalar values from the full quant-suite metrics dict.
+
+    Large arrays (MC paths, Bayesian samples) are dropped; only summary
+    statistics travel to the aggregate report.
+    """
+    if not metrics:
+        return {}
+
+    def _get(path, default=0.0):
+        node = metrics
+        for key in path:
+            if isinstance(node, dict):
+                node = node.get(key, default)
+            else:
+                return default
+        return node
+
+    def _ci(path):
+        val = _get(path, [0.0, 0.0])
+        return list(val) if isinstance(val, (list, tuple)) else [0.0, 0.0]
+
+    return {
+        "psr": float(_get(["probabilistic_sharpe_ratio"], 0.0)),
+        "dsr": float(_get(["deflated_sharpe_ratio"], 0.0)),
+        "markov_strength": float(_get(["markov_transition_strength", "strength"], 0.0)),
+        "markov_chi2": float(_get(["markov_transition_strength", "chi2"], 0.0)),
+        "markov_pvalue": float(_get(["markov_transition_strength", "pvalue"], 1.0)),
+        "brownian_vr": float(_get(["brownian_motion_test", "variance_ratio"], 1.0)),
+        "brownian_z": float(_get(["brownian_motion_test", "z_stat"], 0.0)),
+        "brownian_pvalue": float(_get(["brownian_motion_test", "pvalue"], 1.0)),
+        "bayesian_sharpe_mean": float(_get(["bayesian_sharpe", "mean"], 0.0)),
+        "bayesian_sharpe_median": float(_get(["bayesian_sharpe", "median"], 0.0)),
+        "bayesian_sharpe_ci95": _ci(["bayesian_sharpe", "ci_95"]),
+        "linear_r2": float(_get(["regressions", "linear", "r2"], 0.0)),
+        "linear_slope": float(_get(["regressions", "linear", "slope"], 0.0)),
+        "exponential_r2": float(_get(["regressions", "exponential", "r2"], 0.0)),
+        "exponential_growth_rate": float(_get(["regressions", "exponential", "growth_rate"], 0.0)),
+        "quadratic_r2": float(_get(["regressions", "quadratic", "r2"], 0.0)),
+        "polynomial_r2": float(_get(["regressions", "polynomial", "r2"], 0.0)),
+        "probability_of_ruin": float(_get(["probability_of_ruin", "probability"], 0.0)),
+        "mc_terminal_wealth_mean": float(_get(["monte_carlo", "terminal_wealth", "mean"], 0.0)),
+        "mc_terminal_wealth_ci95": _ci(["monte_carlo", "terminal_wealth", "ci_95"]),
+        "mc_sharpe_mean": float(_get(["monte_carlo", "sharpe", "mean"], 0.0)),
+        "mc_sharpe_ci95": _ci(["monte_carlo", "sharpe", "ci_95"]),
+        "mc_cagr_mean": float(_get(["monte_carlo", "cagr", "mean"], 0.0)),
+        "mc_cagr_ci95": _ci(["monte_carlo", "cagr", "ci_95"]),
+        "mc_max_drawdown_mean": float(_get(["monte_carlo", "max_drawdown", "mean"], 0.0)),
+        "mc_max_drawdown_ci95": _ci(["monte_carlo", "max_drawdown", "ci_95"]),
+        "boot_sharpe_mean": float(_get(["bootstrap", "sharpe", "mean"], 0.0)),
+        "boot_sharpe_ci95": _ci(["bootstrap", "sharpe", "ci_95"]),
+        "boot_cagr_mean": float(_get(["bootstrap", "cagr", "mean"], 0.0)),
+        "boot_cagr_ci95": _ci(["bootstrap", "cagr", "ci_95"]),
+        "boot_max_drawdown_mean": float(_get(["bootstrap", "max_drawdown", "mean"], 0.0)),
+        "boot_max_drawdown_ci95": _ci(["bootstrap", "max_drawdown", "ci_95"]),
+        "boot_win_rate_mean": float(_get(["bootstrap", "win_rate", "mean"], 0.0)),
+        "boot_win_rate_ci95": _ci(["bootstrap", "win_rate", "ci_95"]),
+    }
 
 
 def _build_report(strategy, start_date, end_date, backtest_result, metrics, params):
@@ -101,6 +162,7 @@ def _build_report(strategy, start_date, end_date, backtest_result, metrics, para
             basic.get("end_equity", _final_equity(backtest_result))
         ),
         "metrics_keys": sorted(str(k) for k in metrics.keys()),
+        "metrics_summary": _extract_metrics_summary(metrics),
         # Topstep rule outputs.
         "topstep_enabled": bool(summary.get("topstep_enabled", False)),
         "daily_limit_hits": int(summary.get("daily_limit_hits", 0)),

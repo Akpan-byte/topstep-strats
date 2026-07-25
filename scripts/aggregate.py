@@ -26,6 +26,25 @@ NUMERIC_COLS = [
     "daily_limit_hits", "trailing_limit_hits",
 ]
 
+METRICS_SCALAR_COLS = [
+    "psr", "dsr",
+    "markov_strength", "markov_chi2", "markov_pvalue",
+    "brownian_vr", "brownian_z", "brownian_pvalue",
+    "bayesian_sharpe_mean", "bayesian_sharpe_median",
+    "linear_r2", "linear_slope",
+    "exponential_r2", "exponential_growth_rate",
+    "quadratic_r2", "polynomial_r2",
+    "probability_of_ruin",
+    "mc_terminal_wealth_mean", "mc_sharpe_mean", "mc_cagr_mean", "mc_max_drawdown_mean",
+    "boot_sharpe_mean", "boot_cagr_mean", "boot_max_drawdown_mean", "boot_win_rate_mean",
+]
+
+METRICS_CI_COLS = [
+    "bayesian_sharpe_ci95",
+    "mc_terminal_wealth_ci95", "mc_sharpe_ci95", "mc_cagr_ci95", "mc_max_drawdown_ci95",
+    "boot_sharpe_ci95", "boot_cagr_ci95", "boot_max_drawdown_ci95", "boot_win_rate_ci95",
+]
+
 
 def _weighted_average(df, value_col, weight_col):
     """Weighted average of `value_col` using `weight_col`; safe for empty groups."""
@@ -72,6 +91,8 @@ def _aggregate_group(df):
     start_equity = float(df["start_equity"].mean()) if df["start_equity"].notna().any() else 100_000.0
     total_pnl = float((df["final_equity"] - df["start_equity"]).sum())
 
+    metrics_summary = _aggregate_metrics_summary(df)
+
     return {
         "chunks": int(len(df)),
         "total_trades": total_trades,
@@ -98,7 +119,42 @@ def _aggregate_group(df):
         "trailing_limit_hits": int(df["trailing_limit_hits"].sum()),
         "account_failed_count": int(df["account_failed"].sum()),
         "profit_target_reached_count": int(df["profit_target_reached"].sum()),
+        "metrics_summary": metrics_summary,
     }
+
+
+def _aggregate_metrics_summary(df):
+    """Average scalar quant-suite metrics across chunks.
+
+    Scalar metrics are weighted by trade count; confidence intervals are
+    averaged component-wise (lower bound and upper bound separately).
+    """
+    result = {}
+    for col in METRICS_SCALAR_COLS:
+        if col not in df.columns:
+            result[col] = 0.0
+            continue
+        s = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+        result[col] = _weighted_average(df.assign(__m=s), "__m", "trades")
+
+    for col in METRICS_CI_COLS:
+        if col not in df.columns:
+            result[col] = [0.0, 0.0]
+            continue
+        # Each cell is a [low, high] list; build arrays safely.
+        lows, highs = [], []
+        for val in df[col]:
+            if isinstance(val, (list, tuple)) and len(val) >= 2:
+                lows.append(float(val[0]))
+                highs.append(float(val[1]))
+            else:
+                lows.append(0.0)
+                highs.append(0.0)
+        result[col] = [
+            _weighted_average(df.assign(__m=lows), "__m", "trades"),
+            _weighted_average(df.assign(__m=highs), "__m", "trades"),
+        ]
+    return result
 
 
 def _load_records(input_dir):
@@ -160,6 +216,16 @@ def _build_report_for_mode(records, mode, out_dir):
         rows.append(mode_rec)
 
     df = pd.DataFrame(rows)
+
+    # Flatten nested metrics_summary dicts into top-level columns.
+    metrics_rows = []
+    for rec in records:
+        metrics_rows.append(rec.get(mode, {}).get("metrics_summary", {}))
+    if any(metrics_rows):
+        metrics_df = pd.DataFrame(metrics_rows)
+        for col in metrics_df.columns:
+            df[col] = metrics_df[col].values
+
     for col in NUMERIC_COLS:
         if col not in df.columns:
             df[col] = 0.0
