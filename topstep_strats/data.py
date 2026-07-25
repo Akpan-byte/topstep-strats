@@ -17,8 +17,8 @@ import pandas as pd
 DateLike = Union[str, pd.Timestamp]
 
 
-def load_nq_data(csv_path: str = "/tmp/market_data/NQ_1min.csv") -> pd.DataFrame:
-    """Load NQ 1-minute CSV into a UTC-indexed DataFrame.
+def load_market_data(csv_path: str) -> pd.DataFrame:
+    """Load a 1-minute futures CSV into a UTC-indexed DataFrame.
 
     Parameters
     ----------
@@ -32,7 +32,7 @@ def load_nq_data(csv_path: str = "/tmp/market_data/NQ_1min.csv") -> pd.DataFrame
     """
     path = Path(csv_path)
     if not path.exists():
-        raise FileNotFoundError(f"NQ data not found at {csv_path}")
+        raise FileNotFoundError(f"Market data not found at {csv_path}")
 
     # PyArrow engine parses large CSVs significantly faster than the C engine.
     df = pd.read_csv(
@@ -54,6 +54,11 @@ def load_nq_data(csv_path: str = "/tmp/market_data/NQ_1min.csv") -> pd.DataFrame
         raise ValueError(f"Missing required columns: {missing}")
 
     return df[df.columns.intersection(required)].copy()
+
+
+def load_nq_data(csv_path: str = "/tmp/market_data/NQ_1min.csv") -> pd.DataFrame:
+    """Backward-compatible alias for load_market_data."""
+    return load_market_data(csv_path)
 
 
 def _normalize_timeframe(timeframe: str) -> str:

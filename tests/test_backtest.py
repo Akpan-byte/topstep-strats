@@ -190,3 +190,83 @@ def test_topstep_rules_halt_on_daily_limit():
     assert summary["daily_limit_hits"] >= 1
     assert summary["skipped_trades"] >= 1
     assert summary["executed_trades"] < summary["total_trades"]
+
+
+def test_topstep_daily_limit_resets_next_day():
+    """After a daily-limit hit, trading resumes on the next session."""
+    # Each -40 pt trade = -$800, so first executes, second breaches $900 daily limit.
+    signals = pd.DataFrame(
+        {
+            "entry_time": pd.to_datetime(
+                ["2023-01-01 10:00", "2023-01-01 11:00", "2023-01-02 10:00"]
+            ),
+            "direction": [-1, -1, 1],
+            "entry_price": [15000.0, 15000.0, 15000.0],
+            "stop_loss": [15040.0, 15040.0, 14950.0],
+            "take_profit": [14960.0, 14960.0, 15050.0],
+            "exit_time": pd.to_datetime(
+                ["2023-01-01 10:30", "2023-01-01 11:30", "2023-01-02 10:30"]
+            ),
+            "exit_price": [15040.0, 15040.0, 15050.0],
+            "pnl": [-40.0, -40.0, 50.0],
+            "exit_reason": ["sl", "sl", "tp"],
+        }
+    )
+
+    params = {
+        "initial_capital": 50_000.0,
+        "point_value": 20.0,
+        "topstep": {
+            "enabled": True,
+            "account_size": 50_000.0,
+            "daily_drawdown_limit": 900.0,
+            "trailing_drawdown_limit": 2_000.0,
+            "profit_target": 3_000.0,
+        },
+    }
+    result = run_backtest(signals, params=params)
+    trades = result["trades"]
+
+    # First trade executes, second is skipped (daily limit hit), third executes next day.
+    assert trades.iloc[0]["skipped"] == False
+    assert trades.iloc[1]["skipped"] == True
+    assert trades.iloc[2]["skipped"] == False
+
+
+def test_topstep_profit_target_does_not_halt():
+    """Reaching the profit target flags success but keeps trading."""
+    signals = pd.DataFrame(
+        {
+            "entry_time": pd.to_datetime(
+                ["2023-01-01 10:00", "2023-01-02 10:00", "2023-01-03 10:00"]
+            ),
+            "direction": [1, 1, 1],
+            "entry_price": [15000.0, 15000.0, 15000.0],
+            "stop_loss": [14950.0, 14950.0, 14950.0],
+            "take_profit": [15050.0, 15050.0, 15050.0],
+            "exit_time": pd.to_datetime(
+                ["2023-01-01 10:30", "2023-01-02 10:30", "2023-01-03 10:30"]
+            ),
+            "exit_price": [15050.0, 15050.0, 15050.0],
+            "pnl": [50.0, 50.0, 50.0],
+            "exit_reason": ["tp", "tp", "tp"],
+        }
+    )
+
+    params = {
+        "initial_capital": 50_000.0,
+        "point_value": 20.0,
+        "topstep": {
+            "enabled": True,
+            "account_size": 50_000.0,
+            "daily_drawdown_limit": 900.0,
+            "trailing_drawdown_limit": 2_000.0,
+            "profit_target": 3_000.0,
+        },
+    }
+    result = run_backtest(signals, params=params)
+    summary = result["summary"]
+
+    assert summary["profit_target_reached"] is True
+    assert summary["executed_trades"] == summary["total_trades"]
+    assert summary["skipped_trades"] == 0

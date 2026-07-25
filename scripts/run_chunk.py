@@ -19,6 +19,13 @@ from pathlib import Path
 from typing import Any, Dict
 
 
+INSTRUMENT_CONFIG = {
+    "NQ": {"tick_size": 0.25, "point_value": 20.0},
+    "ES": {"tick_size": 0.25, "point_value": 50.0},
+    "YM": {"tick_size": 1.0, "point_value": 5.0},
+}
+
+
 # Make the project root importable regardless of how this script is invoked.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -28,12 +35,12 @@ if str(_PROJECT_ROOT) not in sys.path:
 def load_modules():
     """Import shared project modules. Returns None if they are not ready yet."""
     try:
-        from topstep_strats.data import load_nq_data, split_by_date
+        from topstep_strats.data import load_market_data, split_by_date
         from topstep_strats.backtest import run_backtest
         from topstep_strats.metrics import calculate_metrics
         from topstep_strats.strategies import kasen_orb, nitro_crt
         return {
-            "load_nq_data": load_nq_data,
+            "load_market_data": load_market_data,
             "split_by_date": split_by_date,
             "run_backtest": run_backtest,
             "calculate_metrics": calculate_metrics,
@@ -246,12 +253,18 @@ def main(argv=None):
     parser.add_argument("--end-date", required=True, help="Chunk end (YYYY-MM-DD)")
     parser.add_argument("--output", required=True, help="Path to write JSON result")
     parser.add_argument(
+        "--instrument",
+        default="NQ",
+        choices=list(INSTRUMENT_CONFIG.keys()),
+        help="Futures instrument (NQ/ES/YM); sets tick_size and point_value",
+    )
+    parser.add_argument(
         "--data-path",
         default=os.environ.get(
             "NQ_DATA_PATH",
             "/config/topstep-strats/data/NQ_1min.csv" if Path("/config/topstep-strats/data/NQ_1min.csv").exists() else "/tmp/market_data/NQ_1min.csv",
         ),
-        help="Path to NQ_1min.csv",
+        help="Path to 1-minute CSV",
     )
     parser.add_argument(
         "--params",
@@ -268,6 +281,16 @@ def main(argv=None):
         raise FileNotFoundError(f"Data file not found: {data_path}")
 
     params = json.loads(args.params) if args.params else {}
+    inst_cfg = INSTRUMENT_CONFIG[args.instrument]
+
+    # Merge instrument defaults into params without overwriting user values.
+    strategy_params = {**(params.get("strategy_params") or {})}
+    strategy_params.setdefault("tick_size", inst_cfg["tick_size"])
+    params["strategy_params"] = strategy_params
+
+    backtest_params = {**(params.get("backtest_params") or {})}
+    backtest_params.setdefault("point_value", inst_cfg["point_value"])
+    params["backtest_params"] = backtest_params
 
     # Smoke-test isolation: force synthetic fallback regardless of module availability.
     if os.environ.get("TOPSTEP_GH_ACTIONS_TEST"):
@@ -278,7 +301,7 @@ def main(argv=None):
     if modules is None:
         report = _synthetic_report(args.strategy, args.start_date, args.end_date, params)
     else:
-        df_1m = modules["load_nq_data"](str(data_path))
+        df_1m = modules["load_market_data"](str(data_path))
         df_chunk = modules["split_by_date"](df_1m, args.start_date, args.end_date)
 
         if df_chunk.empty:

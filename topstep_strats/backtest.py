@@ -10,8 +10,16 @@
 #     * $3,000 profit target for a $50k account
 #   - Reports daily-limit hits, trailing-limit failures, profit-target
 #     reached, max/avg daily drawdown, and peak-to-trough drawdown.
-# WHY: The user wants to see strategy performance both raw and under
-#      Topstep evaluation rules before any parameter tuning.
+# 2026-07-25  kilo
+#   - Fixed Topstep rule semantics for ongoing performance evaluation:
+#     * hitting the profit target now only sets a flag and does NOT stop
+#       trading for the rest of the backtest;
+#     * the daily drawdown limit now skips only the remainder of the
+#       current session and resets the next day;
+#     * the trailing drawdown limit remains a permanent account failure.
+# WHY: The combine profit target is a pass/fail gate, not a daily trading
+#      halt. For payout/evaluation the strategy must keep trading every day
+#      while still respecting the $900 daily and $2k trailing loss limits.
 
 from __future__ import annotations
 
@@ -172,7 +180,10 @@ def _apply_topstep_rules(
     Trades are marked ``skipped=True`` when a rule prevents execution.
     Once the trailing limit is hit, all remaining trades are skipped.
     Once the daily limit is hit, remaining trades on the same calendar day
-    are skipped.
+    are skipped; trading resumes on the next session.
+    Reaching the profit target is recorded as a flag but does NOT stop trading,
+    because the goal is to evaluate ongoing strategy performance / payout
+    potential, not just the combine pass/fail gate.
     """
     daily_limit = float(topstep["daily_drawdown_limit"])
     trailing_limit = float(topstep["trailing_drawdown_limit"])
@@ -182,6 +193,7 @@ def _apply_topstep_rules(
     peak_equity = initial_capital
     daily_start_equity: float | None = None
     current_day: pd.Timestamp | None = None
+    daily_limit_hit = False
     trailing_failed = False
     profit_target_reached = False
     skipped_flags = []
@@ -194,10 +206,17 @@ def _apply_topstep_rules(
         if current_day is None or exit_day != current_day:
             current_day = exit_day
             daily_start_equity = equity
+            daily_limit_hit = False
 
-        if trailing_failed or profit_target_reached:
+        if trailing_failed:
             skipped_flags.append(True)
-            skip_reasons.append("trailing_or_target" if trailing_failed else "profit_target")
+            skip_reasons.append("trailing_limit")
+            equities.append(equity)
+            continue
+
+        if daily_limit_hit:
+            skipped_flags.append(True)
+            skip_reasons.append("daily_limit")
             equities.append(equity)
             continue
 
@@ -209,6 +228,7 @@ def _apply_topstep_rules(
             skipped_flags.append(True)
             skip_reasons.append("daily_limit")
             equities.append(equity)
+            daily_limit_hit = True
             continue
 
         # Check trailing drawdown limit (peak to trough).
@@ -224,7 +244,7 @@ def _apply_topstep_rules(
         # Trade executes.
         equity = prospective_equity
         peak_equity = prospective_peak
-        if equity >= initial_capital + profit_target:
+        if not profit_target_reached and equity >= initial_capital + profit_target:
             profit_target_reached = True
         skipped_flags.append(False)
         skip_reasons.append(None)
