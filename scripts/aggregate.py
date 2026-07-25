@@ -116,10 +116,18 @@ def _load_records(input_dir):
 
 
 def _make_chart(df, output_dir, label):
-    """Plot cumulative average-trade by chunk start date for each strategy."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    """Plot cumulative average-trade by chunk start date for each strategy.
+
+    Charting is best-effort: if matplotlib is unavailable the chart is skipped
+    so aggregation can still run on lean environments (e.g. Akpan laptop).
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as exc:  # pragma: no cover - optional dependency
+        print(f"[aggregate] matplotlib unavailable, skipping chart: {exc}", file=sys.stderr)
+        return None
 
     chart_path = Path(output_dir) / f"equity_by_strategy_{label}.png"
     fig, ax = plt.subplots(figsize=(10, 6))

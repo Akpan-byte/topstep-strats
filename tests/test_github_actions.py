@@ -191,7 +191,7 @@ def test_workflow_yaml_shape():
     assert "kasen_orb" in text
     assert "nitro_crt" in text
     assert text.count("- {start:") == 20
-    assert "rclone copy akpanbrain:data/market_data/NQ_1min.csv" in text
+    assert "gh release download" in text
     assert "actions/download-artifact@v4" in text
     assert "actions/upload-artifact@v4" in text
     assert "aggregate.py" in text

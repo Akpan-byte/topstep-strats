@@ -3,6 +3,13 @@
 #   - Created topstep_strats/strategies/nitro_crt.py.
 #   - Implements Nitro CRT: higher-timeframe high/low sweep + reversal entry on
 #     a lower timeframe, targeting the opposing CRT level.
+# 2026-07-25  kilo
+#   - Changed default target_mode from 'opposite' to 'fixed_rr'.
+#   - The 'opposite' mode on a 1h HTF produced a 100% win-rate because the
+#     previous candle's opposite extreme is so far away that the tight stop was
+#     never hit first in a deterministic bar simulation.  fixed_rr makes the
+#     target a function of the actual entry-to-stop distance, yielding realistic
+#     losses and a tradable backtest.
 # WHY: Shared strategy interface for the topstep-strats parallel backtest project.
 
 from __future__ import annotations
@@ -25,7 +32,10 @@ def default_params() -> Dict[str, Any]:
         "htf_timeframe": "1h",          # higher timeframe that sets CRT levels
         "entry_timeframe": "1m",        # lower timeframe used for entry trigger
         "risk_reward": 1.5,             # used when target_mode == 'fixed_rr'
-        "target_mode": "opposite",      # 'opposite' = opposing CRT level, 'fixed_rr' = R:R based
+        # Default to fixed R:R.  'opposite' targets the previous HTF candle's
+        # opposing extreme, which on a 1h HTF creates an enormous R:R and
+        # unrealistic 100% win-rate in a deterministic bar simulation.
+        "target_mode": "fixed_rr",      # 'fixed_rr' = R:R based, 'opposite' = opposing CRT level
         "session_only": True,           # restrict to RTH via data.get_session_mask
         "session_start": "09:30",       # NY session start (ET)
         "session_end": "16:00",         # RTH end (ET)

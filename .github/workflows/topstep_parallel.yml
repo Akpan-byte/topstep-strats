@@ -4,6 +4,10 @@
 #     20 date chunks and 2 strategies (40 parallel jobs).
 #   - Each job downloads the 1-minute CSV via rclone from the akpanbrain remote
 #     and uploads a small JSON artifact.
+# 2026-07-25  kilo
+#   - Switched data fetch from rclone to `gh release download` because the
+#     rclone/S3 env vars in the runner did not match the Google Drive config.
+#     The CSV is now attached to the `data-v1.0` release asset.
 #   - A final aggregate job downloads all artifacts, combines them, and uploads
 #     the final report + chart.
 # WHY: GitHub Actions provides 20 free concurrent workers; splitting the
