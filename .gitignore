@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Local outputs
+smoke_report/
+local_results/
+results/
+final_report/
+artifacts/
+
+# Data — too large for git; downloaded in CI or stored locally
+*.csv
+*.zst
+*.parquet
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+*~
