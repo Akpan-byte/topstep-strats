@@ -56,11 +56,6 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install rclone
-        run: |
-          curl https://rclone.org/install.sh | sudo bash
-          rclone version
-
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
@@ -68,21 +63,10 @@ jobs:
 
       - name: Fetch NQ market data
         env:
-          MARKET_DATA_URL: ${{ secrets.MARKET_DATA_URL }}
-          RCLONE_CONFIG_AKPANBRAIN_TYPE: ${{ secrets.RCLONE_CONFIG_AKPANBRAIN_TYPE }}
-          RCLONE_CONFIG_AKPANBRAIN_PROVIDER: ${{ secrets.RCLONE_CONFIG_AKPANBRAIN_PROVIDER }}
-          RCLONE_CONFIG_AKPANBRAIN_ACCESS_KEY_ID: ${{ secrets.RCLONE_CONFIG_AKPANBRAIN_ACCESS_KEY_ID }}
-          RCLONE_CONFIG_AKPANBRAIN_SECRET_ACCESS_KEY: ${{ secrets.RCLONE_CONFIG_AKPANBRAIN_SECRET_ACCESS_KEY }}
-          RCLONE_CONFIG_AKPANBRAIN_ENDPOINT: ${{ secrets.RCLONE_CONFIG_AKPANBRAIN_ENDPOINT }}
-          RCLONE_CONFIG_AKPANBRAIN_REGION: ${{ secrets.RCLONE_CONFIG_AKPANBRAIN_REGION }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p /tmp/market_data
-          if command -v rclone >/dev/null 2>&1 && [ -n "${RCLONE_CONFIG_AKPANBRAIN_TYPE:-}" ]; then
-            rclone copy akpanbrain:data/market_data/NQ_1min.csv /tmp/market_data/ || echo "rclone failed, will try fallback URL"
-          fi
-          if [ ! -f /tmp/market_data/NQ_1min.csv ] && [ -n "${MARKET_DATA_URL:-}" ]; then
-            curl -fsSL -o /tmp/market_data/NQ_1min.csv "${MARKET_DATA_URL}"
-          fi
+          gh release download data-v1.0 --repo ${{ github.repository }} --pattern 'NQ_1min.csv' --dir /tmp/market_data/
           test -f /tmp/market_data/NQ_1min.csv
 
       - name: Run backtest chunk
