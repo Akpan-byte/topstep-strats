@@ -10,8 +10,18 @@
 #     The CSV is now attached to the `data-v1.0` release asset.
 #   - A final aggregate job downloads all artifacts, combines them, and uploads
 #     the final report + chart.
-# WHY: GitHub Actions provides 20 free concurrent workers; splitting the
-#      backtest by date keeps each job fast and artifact sizes small.
+# 2026-08-03  coder
+#   - Replaced the 2-strategy matrix with a 2-scenario Nitro CRT matrix
+#     (first_only = one entry per session, reentries = all setups).
+#   - Added --warmup-days 7 so each chunk sees prior HTF context; trades
+#     outside the chunk are dropped to avoid double counting.
+#   - Pinned strategy_params to htf_timeframe=5m / fixed_rr so the run
+#     matches the validated backtest instead of the default 1h (which
+#     produces a fake ~100% win rate).
+#   - Fixed look-ahead bias in nitro_crt.py: entries now use the NEXT bar's
+#     open instead of the signal bar's close.
+# WHY: The live bot trades 5m CRT with reentries; the backtest must use the
+#      same config and a realistic fill price to validate it correctly.
 
 name: Topstep Parallel Backtest
 
@@ -26,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        strategy: [kasen_orb, nitro_crt]
+        scenario: [first_only, reentries]
         chunk:
           # 20 chunks covering the available NQ 1-minute data (2016-06-01 to 2026-05-29).
           - {start: "2016-06-01", end: "2016-11-30"}
@@ -79,16 +89,19 @@ jobs:
         run: |
           mkdir -p results
           python scripts/run_chunk.py \
-            --strategy ${{ matrix.strategy }} \
+            --strategy nitro_crt \
+            --scenario ${{ matrix.scenario }} \
+            --warmup-days 7 \
             --start-date ${{ matrix.chunk.start }} \
             --end-date ${{ matrix.chunk.end }} \
-            --output results/result_${{ matrix.strategy }}_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.json
+            --params '{"strategy_params": {"htf_timeframe": "5m", "entry_timeframe": "1m", "risk_reward": 1.5, "buffer_ticks": 1, "target_mode": "fixed_rr", "session_only": true, "session_start": "09:30", "session_end": "16:00", "tz": "America/New_York"}}' \
+            --output results/result_${{ matrix.scenario }}_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.json
 
       - name: Upload chunk result
         uses: actions/upload-artifact@v4
         with:
-          name: result-${{ matrix.strategy }}-${{ matrix.chunk.start }}-${{ matrix.chunk.end }}
-          path: results/result_${{ matrix.strategy }}_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.json
+          name: result-${{ matrix.scenario }}-${{ matrix.chunk.start }}-${{ matrix.chunk.end }}
+          path: results/result_${{ matrix.scenario }}_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.json
           if-no-files-found: error
 
   aggregate:

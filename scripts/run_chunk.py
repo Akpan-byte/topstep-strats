@@ -6,8 +6,16 @@
 #     metrics) and emits a compact JSON artifact with scalar summary stats.
 #   - Falls back to a deterministic synthetic report when the strategy modules
 #     are not available, so smoke tests stay isolated from other work-streams.
-# WHY: The parallel workflow uploads one small JSON per chunk; aggregating
-#      huge equity curves / MC arrays would waste artifact storage.
+# 2026-08-03  coder
+#   - Added --scenario (first_only | reentries) which maps to
+#     strategy_params["first_setup_per_session"].
+#   - Added --warmup-days N: each chunk loads N days of leading data so the
+#     higher-timeframe CRT levels have context; signals outside the chunk range
+#     are dropped via _filter_signals_in_range so adjacent chunks never
+#     double-count a trade.
+#   - Emit "scenario" in the report so aggregation can separate the modes.
+# WHY: The 10-year run needs both one-entry-per-day and re-entry results, and
+#      overlapping chunks keep GitHub Actions jobs fast without boundary losses.
 
 import argparse
 import hashlib
@@ -17,6 +25,35 @@ import random
 import sys
 from pathlib import Path
 from typing import Any, Dict
+
+from datetime import datetime, timedelta
+
+
+def _shift_days(date_str: str, days: int) -> str:
+    """Shift a YYYY-MM-DD date by ``days`` (negative moves earlier)."""
+    dt = datetime.strptime(date_str, "%Y-%m-%d")
+    return (dt + timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def _filter_signals_in_range(signals_df, start_date: str, end_date: str) -> Any:
+    """Drop trades whose entry_time falls outside [start_date, end_date].
+
+    Used with warmup overlap: the strategy sees extra leading bars for HTF
+    context, but only signals inside the chunk are counted, so adjacent chunk
+    artifacts never double-count a trade.
+    """
+    if signals_df is None or len(signals_df) == 0:
+        return signals_df
+    import pandas as pd
+
+    start_ts = pd.Timestamp(start_date)
+    end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    entries = signals_df["entry_time"]
+    if hasattr(entries, "dt"):
+        mask = (entries.dt.tz_localize(None) >= start_ts) & (entries.dt.tz_localize(None) <= end_ts)
+    else:
+        mask = (entries >= start_ts) & (entries <= end_ts)
+    return signals_df[mask]
 
 
 INSTRUMENT_CONFIG = {
@@ -251,6 +288,18 @@ def main(argv=None):
     parser.add_argument("--strategy", required=True, choices=["kasen_orb", "nitro_crt"])
     parser.add_argument("--start-date", required=True, help="Chunk start (YYYY-MM-DD)")
     parser.add_argument("--end-date", required=True, help="Chunk end (YYYY-MM-DD)")
+    parser.add_argument(
+        "--scenario",
+        default="reentries",
+        choices=["first_only", "reentries"],
+        help="Nitro CRT scenario: first_only = one entry per session, reentries = multiple per day",
+    )
+    parser.add_argument(
+        "--warmup-days",
+        type=int,
+        default=7,
+        help="Load N days before start_date so HTF CRT levels have context; trades outside the chunk are dropped",
+    )
     parser.add_argument("--output", required=True, help="Path to write JSON result")
     parser.add_argument(
         "--instrument",
@@ -286,6 +335,8 @@ def main(argv=None):
     # Merge instrument defaults into params without overwriting user values.
     strategy_params = {**(params.get("strategy_params") or {})}
     strategy_params.setdefault("tick_size", inst_cfg["tick_size"])
+    # Scenario selection: first_only = one setup per session, reentries = all.
+    strategy_params["first_setup_per_session"] = (args.scenario == "first_only")
     params["strategy_params"] = strategy_params
 
     backtest_params = {**(params.get("backtest_params") or {})}
@@ -302,9 +353,18 @@ def main(argv=None):
         report = _synthetic_report(args.strategy, args.start_date, args.end_date, params)
     else:
         df_1m = modules["load_market_data"](str(data_path))
-        df_chunk = modules["split_by_date"](df_1m, args.start_date, args.end_date)
 
-        if df_chunk.empty:
+        # Load a warmup overlap before start_date so the higher-timeframe CRT
+        # levels have prior context (prev_low/prev_high). Overlapping chunks
+        # keep each GitHub Actions job fast while the aggregate drops duplicate
+        # boundary work because we slice trades back to the chunk range below.
+        if args.warmup_days > 0:
+            warm_start = _shift_days(args.start_date, -args.warmup_days)
+        else:
+            warm_start = args.start_date
+        df_warm = modules["split_by_date"](df_1m, warm_start, args.end_date)
+
+        if df_warm.empty:
             report = _build_report(
                 args.strategy,
                 args.start_date,
@@ -315,7 +375,11 @@ def main(argv=None):
             )
         else:
             strategy_mod = modules["strategies"][args.strategy]
-            signals = strategy_mod.generate_signals(df_chunk, params.get("strategy_params"))
+            signals = strategy_mod.generate_signals(df_warm, params.get("strategy_params"))
+
+            # Drop signals outside the requested chunk (warmup produced them).
+            signals = _filter_signals_in_range(signals, args.start_date, args.end_date)
+
             metrics_kwargs = params.get("metrics_kwargs", {})
 
             # Raw backtest: no Topstep rule enforcement.
@@ -346,6 +410,7 @@ def main(argv=None):
 
             report = {
                 "strategy": args.strategy,
+                "scenario": args.scenario,
                 "start_date": args.start_date,
                 "end_date": args.end_date,
                 "params": params,

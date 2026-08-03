@@ -6,8 +6,12 @@
 #   - Updated aggregation to handle both "raw" and "topstep" nested reports
 #     produced by run_chunk.py. Overall and per-strategy summaries are now
 #     emitted for both modes.
+# 2026-08-03  coder
+#   - Added per-scenario grouping (first_only vs reentries) alongside the
+#     existing per-strategy grouping.
 # WHY: Each chunk now outputs two backtests (unconstrained + Topstep rules),
-#      so the aggregate must combine both.
+#      so the aggregate must combine both, and the scenario split is needed to
+#      compare one-entry-per-day vs re-entry results.
 
 import argparse
 import json
@@ -210,7 +214,8 @@ def _build_report_for_mode(records, mode, out_dir):
     rows = []
     for rec in records:
         mode_rec = rec.get(mode, {}).copy()
-        mode_rec["strategy"] = rec["strategy"]
+        mode_rec["strategy"] = rec.get("strategy", "nitro_crt")
+        mode_rec["scenario"] = rec.get("scenario", "reentries")
         mode_rec["start_date"] = rec["start_date"]
         mode_rec["end_date"] = rec["end_date"]
         rows.append(mode_rec)
@@ -240,6 +245,10 @@ def _build_report_for_mode(records, mode, out_dir):
 
     return {
         "overall": _aggregate_group(df),
+        "by_scenario": {
+            scenario: _aggregate_group(group)
+            for scenario, group in df.groupby("scenario", sort=True)
+        },
         "by_strategy": {
             strategy: _aggregate_group(group)
             for strategy, group in df.groupby("strategy", sort=True)

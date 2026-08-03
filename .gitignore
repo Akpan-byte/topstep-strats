@@ -5,6 +5,12 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+.venv-test/
+laptop_results/
+laptop_results_es/
+laptop_results_nq_fixed/
+laptop_results_ym/
+laptop_run.log
 
 # Local outputs
 smoke_report/

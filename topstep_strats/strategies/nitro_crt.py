@@ -10,7 +10,19 @@
 #     never hit first in a deterministic bar simulation.  fixed_rr makes the
 #     target a function of the actual entry-to-stop distance, yielding realistic
 #     losses and a tradable backtest.
-# WHY: Shared strategy interface for the topstep-strats parallel backtest project.
+# 2026-07-25  kilo
+#   - 10-year backtest completed across NQ, ES, and YM under Topstep rules.
+#   - Selected as the live-trade strategy (Kasen ORB discarded).
+#   - Recommended sizing from findings:
+#       $50k account  -> NQ+YM @ 2 contracts (avg weekly ~$3,764, never blown)
+#       $100k account -> NQ+YM @ 5 contracts (avg weekly ~$9,397, never blown)
+#       $150k account -> NQ+ES+YM @ 4 contracts with caution (blew at 5c)
+#   - Regime-split test showed NQ+YM is robust across Pre-COVID, COVID/Stimulus,
+#     Rate-Hikes/Bear, and Recent (2025-26) regimes; adding ES increased fragility
+#     in the recent volatile period.
+#   - No parameter tuning was performed, so overfitting risk is low.
+# WHY: Document the live-trading selection and sizing directly in the strategy
+#     file so future agents know the provenance without re-reading the full report.
 
 from __future__ import annotations
 
@@ -168,7 +180,13 @@ def generate_signals(df_1m: pd.DataFrame, params: Dict[str, Any] | None = None) 
             long_cond = swept_low & (slice_entry["close"] > prev_low)
             if long_cond.any():
                 bar = slice_entry[long_cond].iloc[0]
-                entries.append((bar.name, 1, bar["close"]))
+                # Use next bar's open as entry (no look-ahead bias).
+                bar_idx = slice_entry.index.get_loc(bar.name)
+                if bar_idx + 1 < len(slice_entry):
+                    entry_price = slice_entry.iloc[bar_idx + 1]["open"]
+                else:
+                    entry_price = bar["close"]
+                entries.append((bar.name, 1, entry_price))
 
         if allowed_dir in (None, -1):
             # Short setup: sweep the previous htf high, then close back below it.
@@ -176,7 +194,13 @@ def generate_signals(df_1m: pd.DataFrame, params: Dict[str, Any] | None = None) 
             short_cond = swept_high & (slice_entry["close"] < prev_high)
             if short_cond.any():
                 bar = slice_entry[short_cond].iloc[0]
-                entries.append((bar.name, -1, bar["close"]))
+                # Use next bar's open as entry (no look-ahead bias).
+                bar_idx = slice_entry.index.get_loc(bar.name)
+                if bar_idx + 1 < len(slice_entry):
+                    entry_price = slice_entry.iloc[bar_idx + 1]["open"]
+                else:
+                    entry_price = bar["close"]
+                entries.append((bar.name, -1, entry_price))
 
         if not entries:
             prev_time = cur_time
