@@ -9,9 +9,18 @@
 # 2026-08-03  coder
 #   - Added per-scenario grouping (first_only vs reentries) alongside the
 #     existing per-strategy grouping.
+#   - Fixed equity reconstruction: chained point PnL (gross_profit/gross_loss,
+#     which are in points) is applied to a single $100k base across all chunks
+#     in date order, producing a true equity_curve, total_return, and CAGR.
+#     The old code summed per-chunk dollar equity deltas and took a
+#     trade-weighted average of per-chunk CAGRs, which was meaningless.
+#   - "overall" now uses only the reentries scenario (the superset config)
+#     instead of merging both scenarios, which double-counted first_only trades.
+#   - Chart now plots chained equity per scenario instead of cumulative avg_trade.
 # WHY: Each chunk now outputs two backtests (unconstrained + Topstep rules),
 #      so the aggregate must combine both, and the scenario split is needed to
-#      compare one-entry-per-day vs re-entry results.
+#      compare one-entry-per-day vs re-entry results. Correct equity math is
+#      required to report a credible CAGR / total return.
 
 import argparse
 import json
@@ -59,7 +68,14 @@ def _weighted_average(df, value_col, weight_col):
 
 
 def _aggregate_group(df):
-    """Aggregate a set of chunk records into combined summary statistics."""
+    """Aggregate a set of chunk records into combined summary statistics.
+
+    Equity is reconstructed from *point* PnL (gross_profit/gross_loss, which
+    run_chunk.py stores in points) on a single shared capital base. Summing the
+    per-chunk dollar equity deltas would be misleading because each chunk
+    independently starts from ``initial_capital``; chaining points on one base
+    gives a true compounded equity curve, total return, and CAGR.
+    """
     if df.empty:
         return {
             "chunks": 0,
@@ -81,19 +97,42 @@ def _aggregate_group(df):
             "cagr": 0.0,
             "total_return": 0.0,
             "total_pnl_points": 0.0,
+            "total_pnl_dollars": 0.0,
             "start_equity": 0.0,
             "final_equity": 0.0,
+            "equity_curve": [],
             "daily_limit_hits": 0,
             "trailing_limit_hits": 0,
             "account_failed_count": 0,
             "profit_target_reached_count": 0,
         }
 
+    df = df.sort_values("start_date").reset_index(drop=True)
     total_trades = int(df["trades"].sum())
     gross_profit = float(df["gross_profit"].sum())
     gross_loss = float(df["gross_loss"].sum())
-    start_equity = float(df["start_equity"].mean()) if df["start_equity"].notna().any() else 100_000.0
-    total_pnl = float((df["final_equity"] - df["start_equity"]).sum())
+    net_points = gross_profit + gross_loss
+
+    point_value = float(df["point_value"].iloc[0]) if "point_value" in df.columns and df["point_value"].notna().any() else 20.0
+    start_equity = float(df["start_equity"].iloc[0]) if "start_equity" in df.columns and df["start_equity"].notna().any() else 100_000.0
+    total_pnl_dollars = net_points * point_value
+
+    # Chained equity curve: cumulative point PnL applied to one capital base.
+    equity_curve = []
+    running = start_equity
+    for _, row in df.iterrows():
+        running += float(row["gross_profit"] + row["gross_loss"]) * point_value
+        equity_curve.append({"date": str(row["end_date"]), "equity": running})
+    final_equity = running
+
+    total_return = (final_equity - start_equity) / start_equity if start_equity else 0.0
+    try:
+        first_ts = pd.Timestamp(df["start_date"].iloc[0])
+        last_ts = pd.Timestamp(df["end_date"].iloc[-1])
+        years = (last_ts - first_ts).days / 365.25
+    except Exception:
+        years = 0.0
+    cagr = (final_equity / start_equity) ** (1.0 / years) - 1.0 if years > 0 and start_equity > 0 else 0.0
 
     metrics_summary = _aggregate_metrics_summary(df)
 
@@ -114,11 +153,13 @@ def _aggregate_group(df):
         "max_sod_drawdown_dollar": float(df["max_sod_drawdown_dollar"].max()),
         "avg_sod_drawdown_dollar": float(df["avg_sod_drawdown_dollar"].mean()),
         "sharpe": _weighted_average(df, "sharpe", "trades"),
-        "cagr": _weighted_average(df, "cagr", "trades"),
-        "total_return": total_pnl / start_equity if start_equity else 0.0,
-        "total_pnl_points": total_pnl,
+        "cagr": cagr,
+        "total_return": total_return,
+        "total_pnl_points": net_points,
+        "total_pnl_dollars": total_pnl_dollars,
         "start_equity": start_equity,
-        "final_equity": start_equity + total_pnl,
+        "final_equity": final_equity,
+        "equity_curve": equity_curve,
         "daily_limit_hits": int(df["daily_limit_hits"].sum()),
         "trailing_limit_hits": int(df["trailing_limit_hits"].sum()),
         "account_failed_count": int(df["account_failed"].sum()),
@@ -192,14 +233,18 @@ def _make_chart(df, output_dir, label):
     chart_path = Path(output_dir) / f"equity_by_strategy_{label}.png"
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    for strategy, group in df.groupby("strategy", sort=True):
+    # Plot chained equity per scenario on a shared $100k base.
+    point_value = 20.0
+    if "point_value" in df.columns and df["point_value"].notna().any():
+        point_value = float(df["point_value"].iloc[0])
+    for scenario, group in df.groupby("scenario", sort=True):
         group = group.sort_values("start_date").copy()
-        group["cum_avg_trade"] = group["avg_trade"].cumsum()
-        ax.plot(group["start_date"], group["cum_avg_trade"], marker="o", label=str(strategy))
+        equity = 100_000.0 + (group["gross_profit"] + group["gross_loss"]).cumsum() * point_value
+        ax.plot(group["end_date"], equity, marker="o", label=f"{scenario}")
 
-    ax.set_title(f"Cumulative Average Trade by Strategy Chunk ({label})")
-    ax.set_xlabel("Chunk Start Date")
-    ax.set_ylabel("Cumulative Avg Trade (NQ points)")
+    ax.set_title(f"Chained Equity, $100k Base ({label})")
+    ax.set_xlabel("Chunk End Date")
+    ax.set_ylabel("Equity ($)")
     ax.legend()
     ax.grid(True, alpha=0.3)
     plt.xticks(rotation=45, ha="right")
@@ -218,6 +263,11 @@ def _build_report_for_mode(records, mode, out_dir):
         mode_rec["scenario"] = rec.get("scenario", "reentries")
         mode_rec["start_date"] = rec["start_date"]
         mode_rec["end_date"] = rec["end_date"]
+        # Point value per chunk so equity reconstruction uses the right $/pt.
+        try:
+            mode_rec["point_value"] = float(rec["params"]["backtest_params"]["point_value"])
+        except (KeyError, TypeError, ValueError):
+            mode_rec["point_value"] = 20.0
         rows.append(mode_rec)
 
     df = pd.DataFrame(rows)
@@ -243,8 +293,15 @@ def _build_report_for_mode(records, mode, out_dir):
         else:
             df[col] = df[col].astype(bool)
 
+    # "overall" must be a single coherent configuration. Reentries is a
+    # superset of first_only (it contains the first setup plus all re-entries),
+    # so merging both scenarios would double-count every first_only trade.
+    scenarios = sorted(df["scenario"].unique().tolist())
+    overall_df = df[df["scenario"] == "reentries"] if "reentries" in scenarios else df
+
     return {
-        "overall": _aggregate_group(df),
+        "overall": _aggregate_group(overall_df),
+        "overall_scenario": scenarios,
         "by_scenario": {
             scenario: _aggregate_group(group)
             for scenario, group in df.groupby("scenario", sort=True)
