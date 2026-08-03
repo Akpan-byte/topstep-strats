@@ -21,6 +21,10 @@
 #   - Added per-instrument grouping (NQ/ES/YM) using the reentries-preference
 #     rule so instruments (different point values) are never mixed in one equity
 #     reconstruction, and dollar conversion uses each row's own point value.
+# 2026-08-03  coder
+#   - Added by_config grouping (instrument x htf_timeframe x target_mode x
+#     scenario) and a sorted sweep_summary table so the HTF/target sweep report
+#     shows every config's 10-year totals ranked by net points.
 # WHY: Each chunk now outputs two backtests (unconstrained + Topstep rules),
 #      so the aggregate must combine both, and the scenario split is needed to
 #      compare one-entry-per-day vs re-entry results. Correct equity math is
@@ -272,6 +276,8 @@ def _build_report_for_mode(records, mode, out_dir):
         mode_rec["strategy"] = rec.get("strategy", "nitro_crt")
         mode_rec["scenario"] = rec.get("scenario", "reentries")
         mode_rec["instrument"] = rec.get("instrument", rec.get("params", {}).get("instrument", "NQ"))
+        mode_rec["htf_timeframe"] = rec.get("htf_timeframe", "5m")
+        mode_rec["target_mode"] = rec.get("target_mode", "fixed_rr")
         mode_rec["start_date"] = rec["start_date"]
         mode_rec["end_date"] = rec["end_date"]
         # Point value per chunk so equity reconstruction uses the right $/pt.
@@ -316,6 +322,36 @@ def _build_report_for_mode(records, mode, out_dir):
             return sub[sub["scenario"] == "reentries"]
         return sub
 
+    # Full sweep grouping: every (instrument, htf, target, scenario) combo gets
+    # its own 10-year aggregate. Key format is machine-parseable for the report.
+    by_config = {
+        f"{instrument}__{htf}__{target}__{scenario}": _aggregate_group(group)
+        for (instrument, htf, target, scenario), group in df.groupby(
+            ["instrument", "htf_timeframe", "target_mode", "scenario"], sort=True
+        )
+    }
+
+    # Ranked sweep summary: each config's headline stats, best net points first.
+    def _sweep_summary():
+        rows = []
+        for key, agg in by_config.items():
+            inst, htf, target, scenario = key.split("__")
+            rows.append({
+                "config": key,
+                "instrument": inst,
+                "htf_timeframe": htf,
+                "target_mode": target,
+                "scenario": scenario,
+                "trades": agg["total_trades"],
+                "win_rate": agg["win_rate"],
+                "profit_factor": agg["profit_factor"],
+                "net_points": agg["total_pnl_points"],
+                "net_dollars": agg["total_pnl_dollars"],
+                "cagr": agg["cagr"],
+                "max_drawdown_dollar": agg["max_drawdown_dollar"],
+            })
+        return sorted(rows, key=lambda r: r["net_points"], reverse=True)
+
     return {
         "overall": _aggregate_group(overall_df),
         "overall_scenario": scenarios,
@@ -331,6 +367,8 @@ def _build_report_for_mode(records, mode, out_dir):
             f"{instrument}__{scenario}": _aggregate_group(group)
             for (instrument, scenario), group in df.groupby(["instrument", "scenario"], sort=True)
         },
+        "by_config": by_config,
+        "sweep_summary": _sweep_summary(),
         "by_strategy": {
             strategy: _aggregate_group(group)
             for strategy, group in df.groupby("strategy", sort=True)
