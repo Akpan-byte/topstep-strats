@@ -327,6 +327,10 @@ def _build_report_for_mode(records, mode, out_dir):
             instrument: _aggregate_group(_prefer_reentries(group))
             for instrument, group in df.groupby("instrument", sort=True)
         },
+        "by_instrument_scenario": {
+            f"{instrument}__{scenario}": _aggregate_group(group)
+            for (instrument, scenario), group in df.groupby(["instrument", "scenario"], sort=True)
+        },
         "by_strategy": {
             strategy: _aggregate_group(group)
             for strategy, group in df.groupby("strategy", sort=True)
