@@ -14,8 +14,12 @@
 #     are dropped via _filter_signals_in_range so adjacent chunks never
 #     double-count a trade.
 #   - Emit "scenario" in the report so aggregation can separate the modes.
+# 2026-08-03  coder
+#   - Added --instrument (NQ/ES/YM) and emitted "instrument" in every report
+#     so the aggregate can separate instruments (different tick/point values).
 # WHY: The 10-year run needs both one-entry-per-day and re-entry results, and
-#      overlapping chunks keep GitHub Actions jobs fast without boundary losses.
+#      overlapping chunks keep GitHub Actions jobs fast without boundary losses;
+#      the portfolio now spans NQ, ES, and YM.
 
 import argparse
 import hashlib
@@ -163,7 +167,7 @@ def _extract_metrics_summary(metrics: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _build_report(strategy, start_date, end_date, backtest_result, metrics, params):
+def _build_report(strategy, instrument, start_date, end_date, backtest_result, metrics, params):
     """Convert a full backtest + metrics result into a small aggregate-ready dict."""
     summary = backtest_result.get("summary", {}) if isinstance(backtest_result, dict) else {}
     metrics = metrics or {}
@@ -171,6 +175,7 @@ def _build_report(strategy, start_date, end_date, backtest_result, metrics, para
 
     report = {
         "strategy": strategy,
+        "instrument": instrument,
         "start_date": start_date,
         "end_date": end_date,
         "params": params,
@@ -217,7 +222,7 @@ def _build_report(strategy, start_date, end_date, backtest_result, metrics, para
     return report
 
 
-def _synthetic_flat_report(strategy, start_date, end_date, params, rng):
+def _synthetic_flat_report(strategy, instrument, start_date, end_date, params, rng):
     """Single-mode synthetic record."""
     trades = rng.randint(50, 500)
     win_rate = rng.uniform(0.35, 0.55)
@@ -232,6 +237,7 @@ def _synthetic_flat_report(strategy, start_date, end_date, params, rng):
     final_equity = 100_000.0 + gross_profit + gross_loss
     return {
         "strategy": strategy,
+        "instrument": instrument,
         "start_date": start_date,
         "end_date": end_date,
         "params": params,
@@ -263,18 +269,19 @@ def _synthetic_flat_report(strategy, start_date, end_date, params, rng):
     }
 
 
-def _synthetic_report(strategy, start_date, end_date, params):
+def _synthetic_report(strategy, instrument, start_date, end_date, params):
     """Deterministic placeholder used during smoke tests / cross-agent development."""
     seed = int(hashlib.md5(f"{strategy}:{start_date}:{end_date}".encode()).hexdigest(), 16)
     rng = random.Random(seed)
-    raw = _synthetic_flat_report(strategy, start_date, end_date, params, rng)
-    topstep = _synthetic_flat_report(strategy, start_date, end_date, params, rng)
+    raw = _synthetic_flat_report(strategy, instrument, start_date, end_date, params, rng)
+    topstep = _synthetic_flat_report(strategy, instrument, start_date, end_date, params, rng)
     topstep["topstep_enabled"] = True
     topstep["daily_limit_hits"] = rng.randint(0, 3)
     topstep["trailing_limit_hits"] = int(rng.random() < 0.1)
     topstep["account_failed"] = topstep["trailing_limit_hits"] > 0
     return {
         "strategy": strategy,
+        "instrument": instrument,
         "start_date": start_date,
         "end_date": end_date,
         "params": params,
@@ -350,7 +357,7 @@ def main(argv=None):
         modules = load_modules()
 
     if modules is None:
-        report = _synthetic_report(args.strategy, args.start_date, args.end_date, params)
+        report = _synthetic_report(args.strategy, args.instrument, args.start_date, args.end_date, params)
     else:
         df_1m = modules["load_market_data"](str(data_path))
 
@@ -367,6 +374,7 @@ def main(argv=None):
         if df_warm.empty:
             report = _build_report(
                 args.strategy,
+                args.instrument,
                 args.start_date,
                 args.end_date,
                 {"trades": [], "equity_curve": [], "summary": {}},
@@ -387,6 +395,7 @@ def main(argv=None):
             raw_metrics = modules["calculate_metrics"](raw_bt, **metrics_kwargs)
             raw_report = _build_report(
                 args.strategy,
+                args.instrument,
                 args.start_date,
                 args.end_date,
                 raw_bt,
@@ -401,6 +410,7 @@ def main(argv=None):
             topstep_metrics = modules["calculate_metrics"](topstep_bt, **metrics_kwargs)
             topstep_report = _build_report(
                 args.strategy,
+                args.instrument,
                 args.start_date,
                 args.end_date,
                 topstep_bt,
@@ -410,6 +420,7 @@ def main(argv=None):
 
             report = {
                 "strategy": args.strategy,
+                "instrument": args.instrument,
                 "scenario": args.scenario,
                 "start_date": args.start_date,
                 "end_date": args.end_date,

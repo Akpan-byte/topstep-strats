@@ -20,8 +20,14 @@
 #     produces a fake ~100% win rate).
 #   - Fixed look-ahead bias in nitro_crt.py: entries now use the NEXT bar's
 #     open instead of the signal bar's close.
+# 2026-08-03  coder
+#   - Added an instrument matrix dimension (NQ/ES/YM) so all three futures
+#     are backtested. Each job fetches the matching <INSTR>_1min.csv from the
+#     data-v1.0 release asset and passes --instrument so run_chunk.py applies
+#     the correct tick_size and point_value ($20/$50/$5).
 # WHY: The live bot trades 5m CRT with reentries; the backtest must use the
-#      same config and a realistic fill price to validate it correctly.
+#      same config and a realistic fill price to validate it correctly, and
+#      the portfolio now spans NQ, ES, and YM.
 
 name: Topstep Parallel Backtest
 
@@ -36,9 +42,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        instrument: [NQ, ES, YM]
         scenario: [first_only, reentries]
         chunk:
-          # 20 chunks covering the available NQ 1-minute data (2016-06-01 to 2026-05-29).
+          # 20 chunks covering the available 1-minute data (2016-06-01 to 2026-05-29).
           - {start: "2016-06-01", end: "2016-11-30"}
           - {start: "2016-12-01", end: "2017-05-31"}
           - {start: "2017-06-01", end: "2017-11-30"}
@@ -75,33 +82,34 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Fetch NQ market data
+      - name: Fetch market data
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p /tmp/market_data
-          gh release download data-v1.0 --repo ${{ github.repository }} --pattern 'NQ_1min.csv' --dir /tmp/market_data/
-          test -f /tmp/market_data/NQ_1min.csv
+          gh release download data-v1.0 --repo ${{ github.repository }} --pattern '${{ matrix.instrument }}_1min.csv' --dir /tmp/market_data/
+          test -f /tmp/market_data/${{ matrix.instrument }}_1min.csv
 
       - name: Run backtest chunk
         env:
-          NQ_DATA_PATH: /tmp/market_data/NQ_1min.csv
+          NQ_DATA_PATH: /tmp/market_data/${{ matrix.instrument }}_1min.csv
         run: |
           mkdir -p results
           python scripts/run_chunk.py \
             --strategy nitro_crt \
+            --instrument ${{ matrix.instrument }} \
             --scenario ${{ matrix.scenario }} \
             --warmup-days 7 \
             --start-date ${{ matrix.chunk.start }} \
             --end-date ${{ matrix.chunk.end }} \
             --params '{"strategy_params": {"htf_timeframe": "5m", "entry_timeframe": "1m", "risk_reward": 1.5, "buffer_ticks": 1, "target_mode": "fixed_rr", "session_only": true, "session_start": "09:30", "session_end": "16:00", "tz": "America/New_York"}}' \
-            --output results/result_${{ matrix.scenario }}_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.json
+            --output results/result_${{ matrix.instrument }}_${{ matrix.scenario }}_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.json
 
       - name: Upload chunk result
         uses: actions/upload-artifact@v4
         with:
-          name: result-${{ matrix.scenario }}-${{ matrix.chunk.start }}-${{ matrix.chunk.end }}
-          path: results/result_${{ matrix.scenario }}_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.json
+          name: result-${{ matrix.instrument }}-${{ matrix.scenario }}-${{ matrix.chunk.start }}-${{ matrix.chunk.end }}
+          path: results/result_${{ matrix.instrument }}_${{ matrix.scenario }}_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.json
           if-no-files-found: error
 
   aggregate:

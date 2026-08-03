@@ -17,6 +17,10 @@
 #   - "overall" now uses only the reentries scenario (the superset config)
 #     instead of merging both scenarios, which double-counted first_only trades.
 #   - Chart now plots chained equity per scenario instead of cumulative avg_trade.
+# 2026-08-03  coder
+#   - Added per-instrument grouping (NQ/ES/YM) using the reentries-preference
+#     rule so instruments (different point values) are never mixed in one equity
+#     reconstruction, and dollar conversion uses each row's own point value.
 # WHY: Each chunk now outputs two backtests (unconstrained + Topstep rules),
 #      so the aggregate must combine both, and the scenario split is needed to
 #      compare one-entry-per-day vs re-entry results. Correct equity math is
@@ -113,15 +117,17 @@ def _aggregate_group(df):
     gross_loss = float(df["gross_loss"].sum())
     net_points = gross_profit + gross_loss
 
-    point_value = float(df["point_value"].iloc[0]) if "point_value" in df.columns and df["point_value"].notna().any() else 20.0
+    # Dollar conversion is per-row because a group may mix instruments with
+    # different point values (NQ $20, ES $50, YM $5).
+    pv = df["point_value"].fillna(20.0).astype(float)
     start_equity = float(df["start_equity"].iloc[0]) if "start_equity" in df.columns and df["start_equity"].notna().any() else 100_000.0
-    total_pnl_dollars = net_points * point_value
+    total_pnl_dollars = float(((df["gross_profit"] + df["gross_loss"]) * pv).sum())
 
     # Chained equity curve: cumulative point PnL applied to one capital base.
     equity_curve = []
     running = start_equity
     for _, row in df.iterrows():
-        running += float(row["gross_profit"] + row["gross_loss"]) * point_value
+        running += float(row["gross_profit"] + row["gross_loss"]) * float(row["point_value"])
         equity_curve.append({"date": str(row["end_date"]), "equity": running})
     final_equity = running
 
@@ -233,14 +239,18 @@ def _make_chart(df, output_dir, label):
     chart_path = Path(output_dir) / f"equity_by_strategy_{label}.png"
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # Plot chained equity per scenario on a shared $100k base.
-    point_value = 20.0
-    if "point_value" in df.columns and df["point_value"].notna().any():
-        point_value = float(df["point_value"].iloc[0])
-    for scenario, group in df.groupby("scenario", sort=True):
+    # Plot chained equity per instrument + scenario on a shared $100k base.
+    # Point values differ per instrument, so use each row's own $/pt.
+    start_equity = 100_000.0
+    if "start_equity" in df.columns and df["start_equity"].notna().any():
+        start_equity = float(df["start_equity"].iloc[0])
+    styles = {}
+    for (instrument, scenario), group in df.groupby(["instrument", "scenario"]):
         group = group.sort_values("start_date").copy()
-        equity = 100_000.0 + (group["gross_profit"] + group["gross_loss"]).cumsum() * point_value
-        ax.plot(group["end_date"], equity, marker="o", label=f"{scenario}")
+        pv = group["point_value"].fillna(20.0)
+        equity = start_equity + ((group["gross_profit"] + group["gross_loss"]) * pv).cumsum()
+        color = {"NQ": "#1f77b4", "ES": "#ff7f0e", "YM": "#2ca02c"}.get(str(instrument), None)
+        ax.plot(group["end_date"], equity, marker="o", label=f"{instrument} {scenario}", color=color)
 
     ax.set_title(f"Chained Equity, $100k Base ({label})")
     ax.set_xlabel("Chunk End Date")
@@ -261,6 +271,7 @@ def _build_report_for_mode(records, mode, out_dir):
         mode_rec = rec.get(mode, {}).copy()
         mode_rec["strategy"] = rec.get("strategy", "nitro_crt")
         mode_rec["scenario"] = rec.get("scenario", "reentries")
+        mode_rec["instrument"] = rec.get("instrument", rec.get("params", {}).get("instrument", "NQ"))
         mode_rec["start_date"] = rec["start_date"]
         mode_rec["end_date"] = rec["end_date"]
         # Point value per chunk so equity reconstruction uses the right $/pt.
@@ -299,12 +310,22 @@ def _build_report_for_mode(records, mode, out_dir):
     scenarios = sorted(df["scenario"].unique().tolist())
     overall_df = df[df["scenario"] == "reentries"] if "reentries" in scenarios else df
 
+    def _prefer_reentries(sub):
+        sub_scenarios = sorted(sub["scenario"].unique().tolist())
+        if "reentries" in sub_scenarios:
+            return sub[sub["scenario"] == "reentries"]
+        return sub
+
     return {
         "overall": _aggregate_group(overall_df),
         "overall_scenario": scenarios,
         "by_scenario": {
             scenario: _aggregate_group(group)
             for scenario, group in df.groupby("scenario", sort=True)
+        },
+        "by_instrument": {
+            instrument: _aggregate_group(_prefer_reentries(group))
+            for instrument, group in df.groupby("instrument", sort=True)
         },
         "by_strategy": {
             strategy: _aggregate_group(group)
