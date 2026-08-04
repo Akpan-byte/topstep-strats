@@ -25,6 +25,11 @@
 #     are backtested. Each job fetches the matching <INSTR>_1min.csv from the
 #     data-v1.0 release asset and passes --instrument so run_chunk.py applies
 #     the correct tick_size and point_value ($20/$50/$5).
+# 2026-08-04  coder
+#   - Fixed aggregate laptop-merge step: it used `cd /tmp` then `tar -C artifacts/`,
+#     but artifacts/ lives in the workspace root, so extraction failed (exit 2).
+#     The merge step now downloads to /tmp/laptop_dl and extracts into the
+#     workspace artifacts/ dir directly. YM slice then merges with NQ/ES.
 # 2026-08-03  coder
 #   - REWRITTEN for the full HTF/target sweep. The matrix is now
 #     instrument {NQ, ES} x htf {5m,15m,30m,1h,2h,4h} x target {fixed_rr,
@@ -135,7 +140,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cd /tmp
+          # artifacts/ was created by download-artifact@v4 in the workspace root.
+          # Download the laptop tarball to /tmp, extract into that artifacts dir.
           gh release download data-v2.0 --repo ${{ github.repository }} --pattern 'laptop_results.tar.gz' --dir /tmp/laptop_dl 2>/dev/null || echo "no laptop results yet"
           if test -f /tmp/laptop_dl/laptop_results.tar.gz; then
             tar -xzf /tmp/laptop_dl/laptop_results.tar.gz -C artifacts/
