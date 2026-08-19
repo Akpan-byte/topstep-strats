@@ -222,7 +222,8 @@ def main(argv=None):
     strategy_params.setdefault("point_value", instrument_cfg["point_value"])
 
     backtest_params = {"point_value": instrument_cfg["point_value"]}
-    metrics_kwargs = {}
+    # User requested the full quant suite EXCEPT bootstrapped CIs and MC sims.
+    metrics_kwargs = {"n_mc": 0, "n_boot": 0}
 
     params = {
         "strategy_id": args.strategy_id,
