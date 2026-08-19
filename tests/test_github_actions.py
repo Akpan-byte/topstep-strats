@@ -195,3 +195,20 @@ def test_workflow_yaml_shape():
     assert "actions/download-artifact@v4" in text
     assert "actions/upload-artifact@v4" in text
     assert "aggregate.py" in text
+
+
+def test_paper1_sweep_yaml_shape():
+    wf_path = PROJECT_ROOT / ".github" / "workflows" / "paper1_sweep.yml"
+    text = wf_path.read_text()
+    # 20 matrix batches covering IDs 0-100.
+    assert text.count("- {start:") == 20
+    assert "gh release download" in text
+    assert "ES_1min.parquet" in text
+    assert "NQ_1min.parquet" in text
+    assert "YM_1min.parquet" in text
+    assert "--strategy-id-start" in text
+    assert "--strategy-id-end" in text
+    assert "--no-aggregate" in text
+    assert "scripts/aggregate_paper1.py" in text
+    assert "actions/download-artifact@v4" in text
+    assert "actions/upload-artifact@v4" in text

@@ -1,0 +1,133 @@
+# CHANGE_SUMMARY
+# 2026-08-19  coder
+#   - Created paper1_sweep.yml to run a 100-configuration parameter sweep for
+#     paper1. The matrix has 20 parallel workers; each worker handles 5 strategy
+#     IDs from scripts/paper1_registry.
+#   - Each worker downloads the data-v2.0 ES/NQ/YM parquet release assets via
+#     `gh release download`, runs scripts/run_paper1_sweep.py, and uploads one
+#     artifact containing up to 900 JSON reports (5 IDs x 3 instruments x 3
+#     sessions x 20 date chunks).
+#   - A final aggregate job downloads all artifacts and runs
+#     scripts/aggregate_paper1.py, then uploads the combined report + charts.
+# 2026-08-19  coder
+#   - Fixed sweep step to use the actual CLI flags `--strategy-id-start` and
+#     `--strategy-id-end` and added `--no-aggregate` so the per-job aggregate
+#     step does not collide with the final aggregate job.
+# WHY: GitHub Actions provides 20 concurrent workers; splitting 100 strategy IDs
+#      across them keeps each job fast while still running every configuration
+#      on all three instruments shipped in the data-v2.0 release.
+
+name: Paper 1 Sweep
+
+on:
+  push:
+    branches: [matrix-sweep-paper1, main]
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        batch:
+          - {start: 0, end: 5}
+          - {start: 5, end: 10}
+          - {start: 10, end: 15}
+          - {start: 15, end: 20}
+          - {start: 20, end: 25}
+          - {start: 25, end: 30}
+          - {start: 30, end: 35}
+          - {start: 35, end: 40}
+          - {start: 40, end: 45}
+          - {start: 45, end: 50}
+          - {start: 50, end: 55}
+          - {start: 55, end: 60}
+          - {start: 60, end: 65}
+          - {start: 65, end: 70}
+          - {start: 70, end: 75}
+          - {start: 75, end: 80}
+          - {start: 80, end: 85}
+          - {start: 85, end: 90}
+          - {start: 90, end: 95}
+          - {start: 95, end: 100}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Fetch ES/NQ/YM market data (data-v2.0 parquet)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/market_data
+          gh release download data-v2.0 --repo ${{ github.repository }} \
+            --pattern 'ES_1min.parquet' --pattern 'NQ_1min.parquet' --pattern 'YM_1min.parquet' \
+            --dir /tmp/market_data/
+          test -f /tmp/market_data/ES_1min.parquet
+          test -f /tmp/market_data/NQ_1min.parquet
+          test -f /tmp/market_data/YM_1min.parquet
+
+      - name: Run paper1 sweep batch
+        run: |
+          mkdir -p paper1_results
+          python scripts/run_paper1_sweep.py \
+            --strategy-id-start ${{ matrix.batch.start }} \
+            --strategy-id-end ${{ matrix.batch.end }} \
+            --data-dir /tmp/market_data \
+            --output-dir paper1_results \
+            --no-aggregate
+
+      - name: Upload batch results
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper1-batch-${{ matrix.batch.start }}-${{ matrix.batch.end }}
+          path: paper1_results/*.json
+          if-no-files-found: error
+
+  aggregate:
+    needs: sweep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download all batch artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: paper1-batch-*
+          merge-multiple: true
+
+      - name: Aggregate results
+        run: |
+          python scripts/aggregate_paper1.py --input artifacts --output final_report
+
+      - name: Upload final report
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper1-final-report
+          path: final_report/
+          if-no-files-found: error

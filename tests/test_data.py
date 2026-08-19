@@ -10,7 +10,14 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from topstep_strats.data import get_session_mask, load_nq_data, resample_timeframe, split_by_date
+from topstep_strats.data import (
+    get_session_mask,
+    load_instrument_data,
+    load_market_data,
+    load_nq_data,
+    resample_timeframe,
+    split_by_date,
+)
 
 
 @pytest.fixture
@@ -49,6 +56,60 @@ def test_load_nq_data_columns_and_index(tmp_path):
 def test_load_nq_data_missing_file():
     with pytest.raises(FileNotFoundError):
         load_nq_data("/tmp/nonexistent_nq.csv")
+
+
+def test_load_market_data_parquet(tmp_path):
+    path = tmp_path / "test_1min.parquet"
+    df_in = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                ["2016-06-01 09:30:00", "2016-06-01 09:31:00"], utc=True
+            ),
+            "open": [4500.0, 4500.5],
+            "high": [4501.0, 4502.0],
+            "low": [4499.0, 4500.0],
+            "close": [4500.5, 4501.5],
+            "volume": [100, 200],
+        }
+    ).set_index("timestamp")
+    df_in.to_parquet(path)
+
+    df = load_market_data(str(path))
+    assert list(df.columns) == ["open", "high", "low", "close", "volume"]
+    assert df.index.name == "timestamp"
+    assert df.index.tz is not None
+    assert len(df) == 2
+
+
+def test_load_instrument_data_valid_instruments(tmp_path):
+    for symbol in ["ES", "NQ", "YM"]:
+        path = tmp_path / f"{symbol}_1min.parquet"
+        df_in = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2016-06-01 09:30:00"], utc=True),
+                "open": [4500.0],
+                "high": [4501.0],
+                "low": [4499.0],
+                "close": [4500.5],
+                "volume": [100],
+            }
+        ).set_index("timestamp")
+        df_in.to_parquet(path)
+
+    for symbol in ["es", "Nq", "yM"]:
+        df = load_instrument_data(symbol, str(tmp_path))
+        assert list(df.columns) == ["open", "high", "low", "close", "volume"]
+        assert len(df) == 1
+
+
+def test_load_instrument_data_invalid_instrument(tmp_path):
+    with pytest.raises(ValueError, match="Unsupported instrument"):
+        load_instrument_data("CL", str(tmp_path))
+
+
+def test_load_instrument_data_missing_file(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_instrument_data("NQ", str(tmp_path))
 
 
 def test_get_session_mask_rth(sample_df):
