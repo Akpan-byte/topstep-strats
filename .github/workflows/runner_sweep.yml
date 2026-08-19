@@ -1,0 +1,115 @@
+# CHANGE_SUMMARY
+# 2026-08-19  coder
+#   - Created runner_sweep.yml to parallelize the TP-to-runner sweep across
+#     20 GitHub Actions workers. Each worker runs scripts/runner_batch.py for
+#     one batch of the (base config x runner mode) grid.
+#   - Each worker downloads the data-v2.0 ES/NQ/YM parquet release assets via
+#     `gh release download` and writes one JSON per combo.
+#   - A final aggregate job downloads all artifacts and writes a combined CSV.
+# WHY: The runner sweep is too large for a single VM core but trivially
+#      partitionable; using 20 concurrent GitHub workers cuts wall time to
+#      roughly the cost of one batch plus setup.
+
+name: Runner Sweep
+
+on:
+  push:
+    branches: [matrix-sweep-paper2]
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        batch_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Fetch ES/NQ/YM market data (data-v2.0 parquet)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/market_data
+          gh release download data-v2.0 --repo ${{ github.repository }} \
+            --pattern 'ES_1min.parquet' --pattern 'NQ_1min.parquet' --pattern 'YM_1min.parquet' \
+            --dir /tmp/market_data/
+          test -f /tmp/market_data/NQ_1min.parquet
+
+      - name: Run runner sweep batch
+        run: |
+          mkdir -p runner_results
+          python scripts/runner_batch.py \
+            --batch-id ${{ matrix.batch_id }} \
+            --n-batches 20 \
+            --data-dir /tmp/market_data \
+            --output-dir runner_results
+
+      - name: Upload batch results
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-batch-${{ matrix.batch_id }}
+          path: runner_results/*.json
+          if-no-files-found: error
+
+  aggregate:
+    needs: sweep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download all batch artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: runner-batch-*
+          merge-multiple: true
+
+      - name: Aggregate results
+        run: |
+          python - <<'PY'
+          import json, pandas as pd
+          from pathlib import Path
+          rows = []
+          for p in Path('artifacts').glob('*.json'):
+              rows.append(json.loads(p.read_text()))
+          df = pd.DataFrame(rows)
+          df.to_csv('runner_sweep_aggregated.csv', index=False)
+          print(f"Aggregated {len(df)} results")
+          alive = df[~df['account_failed']]
+          top = alive.sort_values('avg_per_week', ascending=False).head(15)
+          print(top[['base_id','session','tp','sl','mode','win_rate','executed_trades','avg_per_trade','avg_per_week','max_drawdown']].to_string(index=False))
+          PY
+
+      - name: Upload aggregated report
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-sweep-aggregated
+          path: runner_sweep_aggregated.csv
+          if-no-files-found: error
