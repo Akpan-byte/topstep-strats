@@ -572,6 +572,33 @@ def _build_filter_mask(df: pd.DataFrame, filter_expr: Optional[str]) -> pd.Serie
 # Trade simulation
 # -----------------------------------------------------------------------------
 
+def _ts_from_array(ts_arr: np.ndarray, idx: int) -> pd.Timestamp:
+    """Convert a datetime64[ns, UTC] scalar back to a tz-aware Timestamp."""
+    return pd.Timestamp(ts_arr[idx]).tz_localize("UTC")
+
+
+def _simulate_arrays(df: pd.DataFrame) -> Dict[str, np.ndarray]:
+    """Cache NumPy views of a DataFrame for fast exit simulation.
+
+    The cached local-time array uses America/New_York because the legacy
+    _simulate_exit logic evaluated session end against NY local time.
+    """
+    cache = df.attrs.get("_simulate_arrays")
+    if cache is not None:
+        return cache
+    local = df.index.tz_convert("America/New_York").tz_localize(None)
+    ns = local.astype("datetime64[ns]").view(np.int64)
+    cache = {
+        "index": df.index.values,
+        "high": df["high"].values,
+        "low": df["low"].values,
+        "close": df["close"].values,
+        "local_time_s": (ns % 86_400_000_000_000) // 1_000_000_000,
+    }
+    df.attrs["_simulate_arrays"] = cache
+    return cache
+
+
 def _simulate_exit(
     df: pd.DataFrame,
     entry_time: pd.Timestamp,
@@ -582,45 +609,78 @@ def _simulate_exit(
     session_end_time: Optional[Any] = None,
     stop_first: bool = True,
 ) -> Tuple[pd.Timestamp, float, str, float]:
-    """Walk forward from entry_time and return the first exit."""
-    future = df.loc[df.index > entry_time]
-    if future.empty:
-        last = df.iloc[-1]
-        pnl = direction * (last["close"] - entry_price)
-        return df.index[-1], last["close"], "end_of_data", pnl
+    """Walk forward from entry_time and return the first exit.
 
-    for ts, bar in future.iterrows():
-        if session_end_time is not None:
-            local_time = ts.tz_convert("America/New_York").time()
-            if local_time >= session_end_time:
-                pnl = direction * (bar["close"] - entry_price)
-                return ts, bar["close"], "session_end", pnl
+    Uses vectorized NumPy searches over cached arrays instead of iterating a
+    DataFrame slice with ``iterrows``.  The first bar where SL, TP, or the
+    session end occurs wins; when both hit on the same bar ``stop_first``
+    selects the exit price.
+    """
+    ar = _simulate_arrays(df)
+    ts = ar["index"]
+    high = ar["high"]
+    low = ar["low"]
+    close = ar["close"]
+    local_time_s = ar["local_time_s"]
+    n = len(ts)
 
-        if direction == 1:
-            sl_hit = bar["low"] <= stop_loss
-            tp_hit = bar["high"] >= take_profit
-        else:
-            sl_hit = bar["high"] >= stop_loss
-            tp_hit = bar["low"] <= take_profit
+    entry_ts = entry_time.tz_convert("UTC").asm8
+    pos = int(np.searchsorted(ts, entry_ts))
+    start = pos + 1
 
-        if sl_hit and tp_hit:
-            exit_price = stop_loss if stop_first else take_profit
-            reason = "sl" if stop_first else "tp"
-        elif sl_hit:
-            exit_price = stop_loss
-            reason = "sl"
-        elif tp_hit:
-            exit_price = take_profit
-            reason = "tp"
-        else:
-            continue
+    if start >= n:
+        last_close = float(close[-1])
+        return df.index[-1], last_close, "end_of_data", direction * (last_close - entry_price)
 
-        pnl = direction * (exit_price - entry_price)
-        return ts, exit_price, reason, pnl
+    fut_ts = ts[start:]
+    fut_high = high[start:]
+    fut_low = low[start:]
+    fut_close = close[start:]
+    fut_lt = local_time_s[start:]
 
-    last = future.iloc[-1]
-    pnl = direction * (last["close"] - entry_price)
-    return last.name, last["close"], "end_of_data", pnl
+    if direction == 1:
+        sl_idx = np.where(fut_low <= stop_loss)[0]
+        tp_idx = np.where(fut_high >= take_profit)[0]
+    else:
+        sl_idx = np.where(fut_high >= stop_loss)[0]
+        tp_idx = np.where(fut_low <= take_profit)[0]
+
+    sl_first = int(sl_idx[0]) if sl_idx.size else None
+    tp_first = int(tp_idx[0]) if tp_idx.size else None
+    sess_first = None
+
+    if session_end_time is not None:
+        sess_sec = session_end_time.hour * 3600 + session_end_time.minute * 60 + session_end_time.second
+        sess_idx = np.where(fut_lt >= sess_sec)[0]
+        if sess_idx.size:
+            sess_first = int(sess_idx[0])
+
+    best_idx = None
+    best_price = None
+    best_reason = None
+
+    if sl_first is not None:
+        best_idx = sl_first
+        best_price = stop_loss
+        best_reason = "sl"
+
+    if tp_first is not None:
+        if best_idx is None or tp_first < best_idx or (tp_first == best_idx and not stop_first):
+            best_idx = tp_first
+            best_price = take_profit
+            best_reason = "tp"
+
+    if sess_first is not None:
+        if best_idx is None or sess_first < best_idx:
+            best_idx = sess_first
+            best_price = float(fut_close[best_idx])
+            best_reason = "session_end"
+
+    if best_idx is None:
+        last_close = float(fut_close[-1])
+        return _ts_from_array(fut_ts, -1), last_close, "end_of_data", direction * (last_close - entry_price)
+
+    return _ts_from_array(fut_ts, best_idx), float(best_price), best_reason, direction * (float(best_price) - entry_price)
 
 
 def _add_local_meta(df: pd.DataFrame, cfg: Dict[str, Any]) -> pd.DataFrame:
