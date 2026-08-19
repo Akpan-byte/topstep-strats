@@ -1,0 +1,203 @@
+# CHANGE_SUMMARY
+# 2026-08-19  kilo
+#   - Created matrix_sweep_paper2.yml to parallelize the new comprehensive
+#     sweep scripts across 40 GitHub Actions workers: 20 workers for Paper-1
+#     (scripts/sweep_paper1_comprehensive.py) and 20 workers for Paper-2
+#     (scripts/sweep_paper2_focused.py).
+#   - Uses --batch-id / --n-batches partitioning so each worker handles a
+#     deterministic slice of the full combo matrix.
+#   - Each worker downloads ES/NQ/YM parquet data from the data-v2.0 release
+#     assets, installs requirements, and uploads its CSV partition.
+#   - A final aggregate job downloads all Paper-1 and Paper-2 partitions,
+#     concatenates them into the canonical filenames expected by
+#     scripts/aggregate_rank.py, runs the aggregator, and uploads the final
+#     ranked reports + portfolio JSON.
+# WHY: The matrix-sweep-paper2 branch replaces the older per-ID sweep scripts
+#      with --batch-id partitioned CSV writers; this workflow matches that
+#      convention and keeps each worker's runtime small by using the full 20
+#      concurrent GitHub Actions worker quota per sweep.
+
+name: Matrix Sweep Paper 2
+
+on:
+  push:
+    branches: [matrix-sweep-paper2]
+  workflow_dispatch:
+
+jobs:
+  paper1:
+    name: Paper-1 comprehensive sweep
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        batch_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Fetch ES/NQ/YM market data (data-v2.0 parquet)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/market_data
+          gh release download data-v2.0 --repo ${{ github.repository }} \
+            --pattern 'ES_1min.parquet' --pattern 'NQ_1min.parquet' --pattern 'YM_1min.parquet' \
+            --dir /tmp/market_data/
+          test -f /tmp/market_data/ES_1min.parquet
+          test -f /tmp/market_data/NQ_1min.parquet
+          test -f /tmp/market_data/YM_1min.parquet
+
+      - name: Run Paper-1 comprehensive sweep batch
+        run: |
+          mkdir -p paper1_results
+          python scripts/sweep_paper1_comprehensive.py \
+            --batch-id ${{ matrix.batch_id }} \
+            --n-batches 20 \
+            --data-dir /tmp/market_data \
+            --output-dir paper1_results
+
+      - name: Upload Paper-1 batch CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper1-batch-${{ matrix.batch_id }}
+          path: paper1_results/paper1_comprehensive_sweep_batch_${{ matrix.batch_id }}_of_20.csv
+          if-no-files-found: error
+
+  paper2:
+    name: Paper-2 focused sweep
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        batch_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Fetch ES/NQ/YM market data (data-v2.0 parquet)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/market_data
+          gh release download data-v2.0 --repo ${{ github.repository }} \
+            --pattern 'ES_1min.parquet' --pattern 'NQ_1min.parquet' --pattern 'YM_1min.parquet' \
+            --dir /tmp/market_data/
+          test -f /tmp/market_data/ES_1min.parquet
+          test -f /tmp/market_data/NQ_1min.parquet
+          test -f /tmp/market_data/YM_1min.parquet
+
+      - name: Run Paper-2 focused sweep batch
+        run: |
+          mkdir -p paper2_results
+          python scripts/sweep_paper2_focused.py \
+            --batch-id ${{ matrix.batch_id }} \
+            --n-batches 20 \
+            --data-dir /tmp/market_data \
+            --output-dir paper2_results
+
+      - name: Upload Paper-2 batch CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper2-batch-${{ matrix.batch_id }}
+          path: paper2_results/paper2_focused_sweep_batch_${{ matrix.batch_id }}_of_20.csv
+          if-no-files-found: error
+
+  aggregate:
+    name: Aggregate and rank results
+    needs: [paper1, paper2]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download Paper-1 batch CSVs
+        uses: actions/download-artifact@v4
+        with:
+          path: paper1_batches
+          pattern: paper1-batch-*
+          merge-multiple: true
+
+      - name: Download Paper-2 batch CSVs
+        uses: actions/download-artifact@v4
+        with:
+          path: paper2_batches
+          pattern: paper2-batch-*
+          merge-multiple: true
+
+      - name: Concatenate batch partitions
+        run: |
+          mkdir -p gh_results
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          def concat_csvs(src_dir, dst_path):
+              src_files = sorted(Path(src_dir).glob('*.csv'))
+              if not src_files:
+                  raise RuntimeError(f'No CSV files found in {src_dir}')
+              with open(dst_path, 'w', newline='') as out_f:
+                  writer = None
+                  for i, src in enumerate(src_files):
+                      with open(src, newline='') as in_f:
+                          reader = csv.reader(in_f)
+                          header = next(reader)
+                          if writer is None:
+                              writer = csv.writer(out_f)
+                              writer.writerow(header)
+                          for row in reader:
+                              writer.writerow(row)
+              print(f'Concatenated {len(src_files)} files into {dst_path}')
+
+          concat_csvs('paper1_batches', 'gh_results/paper1_comprehensive_sweep.csv')
+          concat_csvs('paper2_batches', 'gh_results/paper2_focused_sweep.csv')
+          PY
+
+      - name: Aggregate and rank
+        run: |
+          python scripts/aggregate_rank.py \
+            --input-dir gh_results \
+            --output-dir final_report
+
+      - name: Upload final ranked reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: matrix-sweep-final-report
+          path: |
+            gh_results/paper1_comprehensive_sweep.csv
+            gh_results/paper2_focused_sweep.csv
+            final_report/
+          if-no-files-found: error

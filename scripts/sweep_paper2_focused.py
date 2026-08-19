@@ -18,8 +18,12 @@ buying a new combine.
 #   - Outputs a single CSV gh_results/paper2_focused_sweep.csv with the
 #     canonical summary columns plus average/median hold durations.
 #   - Supports --batch-id/--n-batches partitioning and --ids-file for testing.
+# 2026-08-19  kilo
+#   - Added _output_path helper so each batch writes a distinct partition file
+#     (paper2_focused_sweep_batch_<id>_of_<n>.csv) when --n-batches > 1.
 # WHY: Provides a compact, parallelizable Paper-2 evaluation script that
-#      follows the same conventions as the Paper-1 broad batch runner.
+#      follows the same conventions as the Paper-1 broad batch runner, and
+#      avoids filename collisions when GitHub Actions aggregates batch artifacts.
 
 from __future__ import annotations
 
@@ -142,6 +146,12 @@ def _read_ids_file(path: Path) -> list[str]:
     return [line.strip() for line in raw if line.strip()]
 
 
+def _output_path(out_dir: Path, batch_id: int, n_batches: int) -> Path:
+    if n_batches <= 1:
+        return out_dir / "paper2_focused_sweep.csv"
+    return out_dir / f"paper2_focused_sweep_batch_{batch_id}_of_{n_batches}.csv"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Focused Paper-2 sweep")
     parser.add_argument("--batch-id", type=int, default=0)
@@ -226,7 +236,7 @@ def main():
             f"hold={stats['avg_hold_seconds']:.0f}s"
         )
 
-    out_csv = out_dir / "paper2_focused_sweep.csv"
+    out_csv = _output_path(out_dir, args.batch_id, args.n_batches)
     if rows:
         df_out = pd.DataFrame(rows)
         cols = [
