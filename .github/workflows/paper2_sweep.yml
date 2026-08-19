@@ -1,0 +1,129 @@
+# CHANGE_SUMMARY
+# 2026-08-19  coder
+#   - Created paper2_sweep.yml to run a 108-configuration parameter sweep for
+#     Paper-2. The matrix has 20 parallel workers; the first 8 workers handle
+#     6 strategy IDs each and the remaining 12 handle 5 IDs each.
+#   - Each worker downloads the data-v2.0 ES/NQ/YM parquet release assets via
+#     `gh release download`, runs scripts/run_paper2_sweep.py, and uploads one
+#     artifact containing up to 1,080 JSON reports (6 IDs x 3 instruments x 3
+#     sessions x 20 date chunks).
+#   - A final aggregate job downloads all artifacts and runs
+#     scripts/aggregate_paper2.py, then uploads the combined report + charts.
+# WHY: GitHub Actions provides 20 concurrent workers; splitting 108 strategy IDs
+#      across them keeps each job fast while still running every configuration
+#      on all three instruments shipped in the data-v2.0 release.
+
+name: Paper 2 Sweep
+
+on:
+  push:
+    branches: [matrix-sweep-paper1, main]
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        batch:
+          - {start: 0, end: 6}
+          - {start: 6, end: 12}
+          - {start: 12, end: 18}
+          - {start: 18, end: 24}
+          - {start: 24, end: 30}
+          - {start: 30, end: 36}
+          - {start: 36, end: 42}
+          - {start: 42, end: 48}
+          - {start: 48, end: 53}
+          - {start: 53, end: 58}
+          - {start: 58, end: 63}
+          - {start: 63, end: 68}
+          - {start: 68, end: 73}
+          - {start: 73, end: 78}
+          - {start: 78, end: 83}
+          - {start: 83, end: 88}
+          - {start: 88, end: 93}
+          - {start: 93, end: 98}
+          - {start: 98, end: 103}
+          - {start: 103, end: 108}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Fetch ES/NQ/YM market data (data-v2.0 parquet)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/market_data
+          gh release download data-v2.0 --repo ${{ github.repository }} \
+            --pattern 'ES_1min.parquet' --pattern 'NQ_1min.parquet' --pattern 'YM_1min.parquet' \
+            --dir /tmp/market_data/
+          test -f /tmp/market_data/ES_1min.parquet
+          test -f /tmp/market_data/NQ_1min.parquet
+          test -f /tmp/market_data/YM_1min.parquet
+
+      - name: Run paper2 sweep batch
+        run: |
+          mkdir -p paper2_results
+          python scripts/run_paper2_sweep.py \
+            --strategy-id-start ${{ matrix.batch.start }} \
+            --strategy-id-end ${{ matrix.batch.end }} \
+            --data-dir /tmp/market_data \
+            --output-dir paper2_results \
+            --no-aggregate
+
+      - name: Upload batch results
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper2-batch-${{ matrix.batch.start }}-${{ matrix.batch.end }}
+          path: paper2_results/*.json
+          if-no-files-found: error
+
+  aggregate:
+    needs: sweep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download all batch artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: paper2-batch-*
+          merge-multiple: true
+
+      - name: Aggregate results
+        run: |
+          python scripts/aggregate_paper2.py --input artifacts --output final_report
+
+      - name: Upload final report
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper2-final-report
+          path: final_report/
+          if-no-files-found: error
