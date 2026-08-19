@@ -30,9 +30,10 @@ INSTRUMENT_CONFIG: Dict[str, Dict[str, Any]] = {
 }
 
 SESSION_CONFIG: Dict[str, Dict[str, str]] = {
-    "Asian": {"start": "20:00", "end": "23:00", "tz": "America/New_York"},
-    "London": {"start": "03:00", "end": "11:00", "tz": "America/New_York"},
-    "NY": {"start": "09:30", "end": "16:00", "tz": "America/New_York"},
+    # Exact windows from the user's research reports (EST/EDT).
+    "Asian": {"start": "18:00", "end": "02:00", "tz": "America/New_York"},
+    "London": {"start": "03:00", "end": "08:00", "tz": "America/New_York"},
+    "NY": {"start": "08:30", "end": "16:00", "tz": "America/New_York"},
 }
 
 # 20 six-month chunks covering the available 1-minute data (2016-06-01 to 2026-05-29).
