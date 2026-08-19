@@ -1,4 +1,17 @@
 #!/usr/bin/env python3
+# CHANGE_SUMMARY
+# 2026-08-19  kilo
+#   - Fixed hold_day mode so it never holds past the end of the entry day.
+#     When day_end_time is not present in the masked DataFrame (e.g. NYA
+#     session ends at 12:00 but day_end is 16:00), the runner now exits at
+#     the last bar of the entry day with reason end_of_data instead of
+#     holding across years of data and producing absurd losses.
+#   - Added local_day array to the simulation cache so the runner can
+#     distinguish calendar days using the existing America/New_York view.
+# WHY: The runner previously used only seconds-since-midnight for time checks,
+#      so a missing day_end caused trades to be carried across the entire
+#      backtest history.
+
 """Runner exit variants for Paper-1/2 strategies.
 
 After the original take-profit level is touched, move the stop-loss to the
@@ -34,6 +47,7 @@ def _simulate_arrays(df: pd.DataFrame) -> dict[str, np.ndarray]:
         "close": df["close"].values,
         "atr": df["atr"].values if "atr" in df.columns else np.zeros(len(df)),
         "local_time_s": (ns % 86_400_000_000_000) // 1_000_000_000,
+        "local_day": (ns // 86_400_000_000_000).astype(np.int64),
     }
     df.attrs["_simulate_arrays"] = cache
     return cache
@@ -72,6 +86,7 @@ def simulate_runner_exit(
     close = ar["close"]
     atr = ar["atr"]
     local_time_s = ar["local_time_s"]
+    local_day = ar["local_day"]
     n = len(ts)
 
     entry_ts = entry_time.tz_convert("UTC").asm8
@@ -81,12 +96,31 @@ def simulate_runner_exit(
         lc = float(close[-1])
         return df.index[-1], lc, "end_of_data", direction * (lc - entry_price)
 
+    entry_day = int(local_day[pos])
     fut_ts = ts[start:]
     fut_high = high[start:]
     fut_low = low[start:]
     fut_close = close[start:]
     fut_atr = atr[start:]
     fut_lt = local_time_s[start:]
+    fut_day = local_day[start:]
+
+    # For hold_day, never carry a trade past the end of the entry day.  This
+    # prevents absurd multi-day/multiyear holds when day_end_time is not
+    # present in the masked DataFrame (e.g. NYA session ends at 12:00 but
+    # day_end is 16:00).
+    if mode == "hold_day":
+        day_mask = fut_day == entry_day
+        if not day_mask.any():
+            lc = float(close[pos])
+            return _ts_from_array(ts, pos), lc, "end_of_data", direction * (lc - entry_price)
+        last_entry_day_idx = int(np.where(day_mask)[0][-1])
+        fut_ts = fut_ts[: last_entry_day_idx + 1]
+        fut_high = fut_high[: last_entry_day_idx + 1]
+        fut_low = fut_low[: last_entry_day_idx + 1]
+        fut_close = fut_close[: last_entry_day_idx + 1]
+        fut_atr = fut_atr[: last_entry_day_idx + 1]
+        fut_lt = fut_lt[: last_entry_day_idx + 1]
 
     if direction == 1:
         sl_idx = np.where(fut_low <= stop_loss)[0]
@@ -126,7 +160,8 @@ def simulate_runner_exit(
         return _ts_from_array(fut_ts, sl_first), stop_loss, "sl", direction * (stop_loss - entry_price)
 
     # Runner phase: move stop to TP (breakeven) and continue from the bar
-    # after the TP bar.
+    # after the TP bar.  The future arrays are already capped to the entry
+    # day for hold_day, so a missing day_end exits at the last entry-day bar.
     runner_start = tp_first + 1
     if runner_start >= len(fut_ts):
         # TP was hit on the last available bar; close at TP.

@@ -17,6 +17,13 @@
 #     * the daily drawdown limit now skips only the remainder of the
 #       current session and resets the next day;
 #     * the trailing drawdown limit remains a permanent account failure.
+# 2026-08-19  kilo
+#   - Added hold-duration statistics to the summary: avg_hold_seconds,
+#     median_hold_seconds, p10_hold_seconds, and p90_hold_seconds, computed
+#     from exit_time - entry_time of executed trades.
+# WHY: Runner sweeps need to flag trades with unrealistically short hold
+#      times (e.g. <5 seconds) caused by simulation artifacts.
+# 2026-07-25  kilo
 # WHY: The combine profit target is a pass/fail gate, not a daily trading
 #      halt. For payout/evaluation the strategy must keep trading every day
 #      while still respecting the $900 daily and $2k trailing loss limits.
@@ -388,6 +395,20 @@ def _build_summary(
         else final_equity - initial_capital
     )
 
+    # Hold-duration statistics for executed trades (exit_time - entry_time).
+    if not executed.empty:
+        hold_deltas = executed["exit_time"] - executed["entry_time"]
+        hold_seconds = hold_deltas.dt.total_seconds().to_numpy()
+        avg_hold = float(np.mean(hold_seconds))
+        median_hold = float(np.median(hold_seconds))
+        p10_hold = float(np.percentile(hold_seconds, 10))
+        p90_hold = float(np.percentile(hold_seconds, 90))
+    else:
+        avg_hold = 0.0
+        median_hold = 0.0
+        p10_hold = 0.0
+        p90_hold = 0.0
+
     summary: Dict[str, Any] = {
         "initial_capital": initial_capital,
         "final_equity": final_equity,
@@ -415,6 +436,10 @@ def _build_summary(
         "avg_daily_return": float(daily_returns.mean()) if len(daily_returns) else 0.0,
         "daily_volatility": float(daily_returns.std()) if len(daily_returns) else 0.0,
         "cumulative_pnl_dollars": cumulative_pnl_dollars,
+        "avg_hold_seconds": avg_hold,
+        "median_hold_seconds": median_hold,
+        "p10_hold_seconds": p10_hold,
+        "p90_hold_seconds": p90_hold,
     }
 
     # Topstep-specific stats.
@@ -477,6 +502,10 @@ def _empty_summary(params: Dict[str, Any]) -> Dict[str, Any]:
         "avg_sod_drawdown_pct": 0.0,
         "avg_daily_return": 0.0,
         "daily_volatility": 0.0,
+        "avg_hold_seconds": 0.0,
+        "median_hold_seconds": 0.0,
+        "p10_hold_seconds": 0.0,
+        "p90_hold_seconds": 0.0,
         "topstep_enabled": bool(topstep.get("enabled")),
         "daily_limit_hits": 0,
         "trailing_limit_hits": 0,

@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+# CHANGE_SUMMARY
+# 2026-08-19  kilo
+#   - Fixed hold_day mode so it never holds past the end of the entry day.
+#     When day_end_time is not present in the masked DataFrame (e.g. NYA
+#     session ends at 12:00 but day_end is 16:00), the runner exits at the
+#     last bar of the entry day with reason end_of_data instead of holding
+#     across the entire backtest history.
+#   - Added local_day array to the simulation cache and passed it into the
+#     JIT kernel so calendar-day boundaries are visible to the runner.
+# WHY: The seconds-since-midnight time check could not distinguish days, so
+#      a missing day_end caused trades to be carried for years.
+
 """Numba-accelerated runner exit simulation (per-trade JIT loop)."""
 from __future__ import annotations
 
@@ -35,6 +47,7 @@ def _simulate_arrays(df: pd.DataFrame) -> dict[str, np.ndarray]:
         "close": df["close"].values,
         "atr": df["atr"].values if "atr" in df.columns else np.zeros(len(df)),
         "local_time_s": (ns % 86_400_000_000_000) // 1_000_000_000,
+        "local_day": (ns // 86_400_000_000_000).astype(np.int64),
     }
     df.attrs["_simulate_arrays_numba"] = cache
     return cache
@@ -53,6 +66,7 @@ if njit is not None:
         close: np.ndarray,
         atr: np.ndarray,
         local_time_s: np.ndarray,
+        local_day: np.ndarray,
         entry_idx: int,
         direction: int,
         stop_loss: float,
@@ -71,8 +85,23 @@ if njit is not None:
         d = direction
         sl = stop_loss
         tp = take_profit
+        entry_day = local_day[entry_idx]
 
-        for i in range(start, n):
+        # For hold_day, cap all scanning to the entry day so a missing
+        # day_end_time cannot carry the trade across days or years.
+        loop_end = n
+        if mode == 1:
+            last_entry_day_idx = n - 1
+            for k in range(entry_idx, n):
+                if local_day[k] != entry_day:
+                    last_entry_day_idx = k - 1
+                    break
+            loop_end = last_entry_day_idx + 1
+            if start >= loop_end:
+                # Entry is on the last bar of the entry day; exit there.
+                return entry_idx, float(close[entry_idx]), 5  # end_of_data
+
+        for i in range(start, loop_end):
             # Baseline SL / TP checks.
             if d == 1:
                 sl_hit = low[i] <= sl
@@ -91,8 +120,13 @@ if njit is not None:
                     return i, sl, 0  # sl
 
                 # Runner phase starts on the next bar.
+                runner_start = i + 1
+                if runner_start >= loop_end:
+                    # TP was hit on the last bar of the entry day; close at TP.
+                    return i, tp, 1  # tp
+
                 runner_stop = tp
-                for j in range(i + 1, n):
+                for j in range(runner_start, loop_end):
                     if mode == 2 and local_time_s[j] >= session_end_sec:
                         return j, float(close[j]), 2  # session_end
                     if mode == 1 and local_time_s[j] >= day_end_sec:
@@ -110,8 +144,8 @@ if njit is not None:
                                 runner_stop = cand
                             if high[j] >= runner_stop:
                                 return j, float(runner_stop), 4  # trail_stop
-                # Runner never exited within available data.
-                return n - 1, float(close[n - 1]), 5
+                # Runner never exited within available data / entry day.
+                return loop_end - 1, float(close[loop_end - 1]), 5  # end_of_data
 
             # Baseline session / day end (only if we haven't hit TP/SL).
             if session_end_sec >= 0 and local_time_s[i] >= session_end_sec:
@@ -119,6 +153,9 @@ if njit is not None:
             if day_end_sec >= 0 and local_time_s[i] >= day_end_sec:
                 return i, float(close[i]), 3  # day_end
 
+        # Reached the end of the allowed scan range without an exit.
+        if mode == 1:
+            return loop_end - 1, float(close[loop_end - 1]), 5  # end_of_data
         return n - 1, float(close[n - 1]), 5  # end_of_data
 else:
     def _simulate_runner_numba_one(*args, **kwargs):  # pragma: no cover
@@ -179,6 +216,7 @@ def apply_runner_to_signals(
     close_arr = ar["close"]
     atr_arr = ar["atr"]
     lt_arr = ar["local_time_s"]
+    ld_arr = ar["local_day"]
 
     for t in range(n):
         ei = entry_idx[t]
@@ -189,6 +227,7 @@ def apply_runner_to_signals(
             close_arr,
             atr_arr,
             lt_arr,
+            ld_arr,
             int(ei),
             int(signals["direction"].iat[t]),
             float(signals["stop_loss"].iat[t]),
