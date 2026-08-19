@@ -1316,6 +1316,7 @@ def generate_signals(df_1m: pd.DataFrame, params: Optional[Dict[str, Any]] = Non
         return _empty_signals()
 
     df = df_1m.copy()
+    df.attrs = {}  # prevent cached array attrs from breaking resample/concat
     required = {"open", "high", "low", "close", "volume"}
     missing = required - set(df.columns)
     if missing:

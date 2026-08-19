@@ -181,9 +181,13 @@ def resample_timeframe(df: pd.DataFrame, timeframe: str = "15m") -> pd.DataFrame
         "volume": "sum",
     }
 
-    # Keep only columns we know how to aggregate.
+    # Keep only columns we know how to aggregate.  Drop any attrs cached by
+    # Numba/array helpers so pandas concat's __finalize__ does not try to
+    # compare numpy arrays (which raises "ambiguous array" ValueError).
     cols = [c for c in agg if c in df.columns]
-    resampled = df[cols].resample(tf, label="left", closed="left").agg({c: agg[c] for c in cols})
+    clean = df[cols].copy()
+    clean.attrs = {}
+    resampled = clean.resample(tf, label="left", closed="left").agg({c: agg[c] for c in cols})
     return resampled.dropna()
 
 
