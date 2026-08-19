@@ -406,15 +406,25 @@ def _time_in_window(index_utc: pd.DatetimeIndex, tz: str, start: str, end: str) 
 
 
 def _local_time_seconds(index_utc: pd.DatetimeIndex, tz: str) -> np.ndarray:
-    """Return seconds since midnight in ``tz`` for each UTC timestamp."""
-    local = index_utc.tz_convert(tz)
-    return (local.astype(np.int64) % 86_400_000_000_000) // 1_000_000_000
+    """Return seconds since midnight in ``tz`` for each UTC timestamp.
+
+    Uses nanosecond-resolution view so the math is correct regardless of the
+    DatetimeIndex's stored resolution (ms/us/ns).
+    """
+    local = index_utc.tz_convert(tz).tz_localize(None)
+    ns = local.astype("datetime64[ns]").view(np.int64)
+    return (ns % 86_400_000_000_000) // 1_000_000_000
 
 
 def _date_day(index_utc: pd.DatetimeIndex, tz: str) -> np.ndarray:
-    """Return integer local day number in ``tz`` for each UTC timestamp."""
-    local = index_utc.tz_convert(tz)
-    return (local.astype(np.int64) // 86_400_000_000_000).astype(np.int64)
+    """Return integer local day number in ``tz`` for each UTC timestamp.
+
+    Uses nanosecond-resolution view so the math is correct regardless of the
+    DatetimeIndex's stored resolution (ms/us/ns).
+    """
+    local = index_utc.tz_convert(tz).tz_localize(None)
+    ns = local.astype("datetime64[ns]").view(np.int64)
+    return (ns // 86_400_000_000_000).astype(np.int64)
 
 
 def _rolling_poc(df: pd.DataFrame, lookback: int) -> pd.Series:
@@ -541,13 +551,14 @@ def _simulate_arrays(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     cache = df.attrs.get("_simulate_arrays")
     if cache is not None:
         return cache
-    local = df.index.tz_convert("America/New_York")
+    local = df.index.tz_convert("America/New_York").tz_localize(None)
+    ns = local.astype("datetime64[ns]").view(np.int64)
     cache = {
         "index": df.index.values,
         "high": df["high"].values,
         "low": df["low"].values,
         "close": df["close"].values,
-        "local_time_s": (local.astype(np.int64) % 86_400_000_000_000) // 1_000_000_000,
+        "local_time_s": (ns % 86_400_000_000_000) // 1_000_000_000,
     }
     df.attrs["_simulate_arrays"] = cache
     return cache
