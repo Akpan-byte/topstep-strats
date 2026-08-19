@@ -154,7 +154,12 @@ def apply_runner_to_signals(
 
     ar = _simulate_arrays(df)
     index = ar["index"]
-    ts = pd.to_datetime(signals["entry_time"]).tz_convert("UTC").values
+    ts = pd.to_datetime(signals["entry_time"])
+    if ts.dt.tz is None:
+        ts = ts.dt.tz_localize("UTC")
+    else:
+        ts = ts.dt.tz_convert("UTC")
+    ts = ts.values
     entry_idx = np.searchsorted(index, ts)
 
     mode_code = {"trail": 0, "hold_day": 1, "hold_session": 2}[mode]
