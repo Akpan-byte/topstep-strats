@@ -178,7 +178,9 @@ def _apply_topstep_rules(
     """Walk through trades and enforce Topstep daily/trailing drawdown limits.
 
     Trades are marked ``skipped=True`` when a rule prevents execution.
-    Once the trailing limit is hit, all remaining trades are skipped.
+    Once the trailing limit is hit, all remaining trades are skipped unless
+    ``reset_on_failure`` is enabled, in which case the account is reset to
+    ``initial_capital`` and trading continues (modeling buying a new combine).
     Once the daily limit is hit, remaining trades on the same calendar day
     are skipped; trading resumes on the next session.
     Reaching the profit target is recorded as a flag but does NOT stop trading,
@@ -188,6 +190,7 @@ def _apply_topstep_rules(
     daily_limit = float(topstep["daily_drawdown_limit"])
     trailing_limit = float(topstep["trailing_drawdown_limit"])
     profit_target = float(topstep["profit_target"])
+    reset_on_failure = bool(topstep.get("reset_on_failure", False))
 
     equity = initial_capital
     peak_equity = initial_capital
@@ -199,6 +202,11 @@ def _apply_topstep_rules(
     skipped_flags = []
     skip_reasons = []
     equities = []
+    account_ids = []
+    cumulative_pnls = []
+    cumulative_pnl = 0.0
+    account_id = 0
+    account_blowups = 0
 
     for _, row in trades.iterrows():
         exit_day = row["exit_time"].normalize()
@@ -208,16 +216,20 @@ def _apply_topstep_rules(
             daily_start_equity = equity
             daily_limit_hit = False
 
-        if trailing_failed:
+        if trailing_failed and not reset_on_failure:
             skipped_flags.append(True)
             skip_reasons.append("trailing_limit")
             equities.append(equity)
+            account_ids.append(account_id)
+            cumulative_pnls.append(cumulative_pnl)
             continue
 
         if daily_limit_hit:
             skipped_flags.append(True)
             skip_reasons.append("daily_limit")
             equities.append(equity)
+            account_ids.append(account_id)
+            cumulative_pnls.append(cumulative_pnl)
             continue
 
         prospective_equity = equity + row["trade_pnl_dollars"]
@@ -228,6 +240,8 @@ def _apply_topstep_rules(
             skipped_flags.append(True)
             skip_reasons.append("daily_limit")
             equities.append(equity)
+            account_ids.append(account_id)
+            cumulative_pnls.append(cumulative_pnl)
             daily_limit_hit = True
             continue
 
@@ -235,26 +249,51 @@ def _apply_topstep_rules(
         prospective_peak = max(peak_equity, prospective_equity)
         prospective_trough_dd = prospective_peak - prospective_equity
         if prospective_trough_dd > trailing_limit:
+            if reset_on_failure:
+                # Trade executes and blows the current account. Count the loss,
+                # then reset capital and continue with the next trade.
+                equity = prospective_equity
+                peak_equity = prospective_peak
+                cumulative_pnl += row["trade_pnl_dollars"]
+                skipped_flags.append(False)
+                skip_reasons.append(None)
+                equities.append(equity)
+                account_ids.append(account_id)
+                cumulative_pnls.append(cumulative_pnl)
+                account_blowups += 1
+                account_id += 1
+                equity = initial_capital
+                peak_equity = initial_capital
+                daily_start_equity = equity
+                daily_limit_hit = False
+                continue
             skipped_flags.append(True)
             skip_reasons.append("trailing_limit")
             equities.append(equity)
+            account_ids.append(account_id)
+            cumulative_pnls.append(cumulative_pnl)
             trailing_failed = True
             continue
 
         # Trade executes.
         equity = prospective_equity
         peak_equity = prospective_peak
+        cumulative_pnl += row["trade_pnl_dollars"]
         if not profit_target_reached and equity >= initial_capital + profit_target:
             profit_target_reached = True
         skipped_flags.append(False)
         skip_reasons.append(None)
         equities.append(equity)
+        account_ids.append(account_id)
+        cumulative_pnls.append(cumulative_pnl)
 
     trades = trades.copy()
     trades["skipped"] = skipped_flags
     trades["skip_reason"] = skip_reasons
     trades["equity"] = equities
-    trades["cumulative_pnl_dollars"] = trades["equity"] - initial_capital
+    trades["account_id"] = account_ids
+    trades["cumulative_pnl_dollars"] = cumulative_pnls
+    trades.attrs["account_blowups"] = account_blowups
     return trades
 
 
@@ -340,6 +379,15 @@ def _build_summary(
     final_equity = float(equity_curve.iloc[-1]) if not equity_curve.empty else initial_capital
     total_return_pct = (final_equity - initial_capital) / initial_capital
 
+    # When resetting blown accounts, the meaningful "total return" is the
+    # cumulative realized PnL across all accounts, not the equity of the last
+    # active account.  total_pnl_dollars is kept for backward compatibility.
+    cumulative_pnl_dollars = (
+        float(trades["cumulative_pnl_dollars"].iloc[-1])
+        if not trades.empty and "cumulative_pnl_dollars" in trades.columns
+        else final_equity - initial_capital
+    )
+
     summary: Dict[str, Any] = {
         "initial_capital": initial_capital,
         "final_equity": final_equity,
@@ -366,6 +414,7 @@ def _build_summary(
         "avg_sod_drawdown_pct": avg_sod_dd_pct,
         "avg_daily_return": float(daily_returns.mean()) if len(daily_returns) else 0.0,
         "daily_volatility": float(daily_returns.std()) if len(daily_returns) else 0.0,
+        "cumulative_pnl_dollars": cumulative_pnl_dollars,
     }
 
     # Topstep-specific stats.
@@ -375,20 +424,25 @@ def _build_summary(
         summary["daily_limit_hits"] = int((skip_reasons == "daily_limit").sum())
         summary["trailing_limit_hits"] = int((skip_reasons == "trailing_limit").sum())
         summary["account_failed"] = bool((skip_reasons == "trailing_limit").any())
+        summary["account_blowups"] = int(trades.attrs.get("account_blowups", 0))
         summary["profit_target_reached"] = bool(
             final_equity >= initial_capital + float(topstep["profit_target"])
+            or cumulative_pnl_dollars >= float(topstep["profit_target"])
         )
         summary["profit_target"] = float(topstep["profit_target"])
         summary["daily_drawdown_limit"] = float(topstep["daily_drawdown_limit"])
         summary["trailing_drawdown_limit"] = float(topstep["trailing_drawdown_limit"])
+        summary["reset_on_failure"] = bool(topstep.get("reset_on_failure", False))
     else:
         summary["daily_limit_hits"] = 0
         summary["trailing_limit_hits"] = 0
         summary["account_failed"] = False
+        summary["account_blowups"] = 0
         summary["profit_target_reached"] = False
         summary["profit_target"] = float(topstep["profit_target"])
         summary["daily_drawdown_limit"] = float(topstep["daily_drawdown_limit"])
         summary["trailing_drawdown_limit"] = float(topstep["trailing_drawdown_limit"])
+        summary["reset_on_failure"] = False
 
     return summary
 
