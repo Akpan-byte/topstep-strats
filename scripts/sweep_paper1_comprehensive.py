@@ -8,21 +8,24 @@
 #   - Supports --batch-id/--n-batches partitioning for GitHub Actions; writes
 #     a single CSV (or per-batch partition when n_batches > 1).
 # 2026-08-19  kilo
-#   - Replaced the single-threaded combo loop with multiprocessing.Pool so
-#     signal generation (the bottleneck, especially ICT Silver Bullet) runs in
-#     parallel across CPU cores. Each worker loads its own data copy and
-#     applies all runner modes for one signal key, returning a list of records.
-#   - Added --workers CLI argument (defaults to min(mp.cpu_count(), 14)) and
-#     periodic CSV flushes so results are visible before the sweep finishes.
-#   - Added _all_signal_keys() so the pool parallelizes over unique signal
-#     generation keys rather than over raw combos, while still emitting one row
-#     per (id, instrument, session, tp, sl, mode).
-# WHY: The original single-threaded sweep was projected to take days. Even
-#      without vectorizing the slowest blueprint, parallelizing brings the full
-#      Paper-1 sweep down to a few hours on a 16-core machine.
+#   - Replaced the single-threaded combo loop with multiprocessing.Pool.
+#   - Added --workers CLI argument and periodic CSV flushes.
+# 2026-08-19  kilo
+#   - Switched to instrument-by-instrument processing.  The parent loads one
+#     instrument, forks a pool of workers, and processes every strategy/session/
+#     tp/sl key for that instrument before moving to the next instrument.  This
+#     keeps the per-worker memory footprint to one instrument (~400 MB) instead
+#     of all three (~1.4 GB), so 16 workers can run without swapping on a 16 GB+
+#     machine.
+#   - Workers inherit the already-loaded DataFrame via copy-on-write; each
+#     worker only materializes its own signal table.
+#   - Reduced default --flush-every to 25 so progress is visible sooner.
+# WHY: 14 workers loading all three instruments each caused the laptop to swap
+#      and stall.  Processing one instrument at a time with all 16 cores is both
+#      faster and memory-safe.
 
 #!/usr/bin/env python3
-"""Comprehensive Paper-1 sweep runner (multiprocessing)."""
+"""Comprehensive Paper-1 sweep runner (multiprocessing, instrument-by-instrument)."""
 from __future__ import annotations
 
 import argparse
@@ -98,14 +101,13 @@ OUTPUT_COLUMNS = [
 ]
 
 
-def _all_signal_keys() -> list[tuple]:
-    """Unique signal-generation keys: one per (id, instrument, session, tp, sl)."""
+def _signal_keys_for_instrument(instr: str) -> list[tuple]:
+    """All (id, instrument, session, start, end, tp, sl) keys for one instrument."""
     keys = []
     for sid in list_strategy_ids():
-        for instr in INSTRUMENTS:
-            for sess, (start, end) in SESSIONS.items():
-                for tp, sl in TP_SL_GRID:
-                    keys.append((sid, instr, sess, start, end, tp, sl))
+        for sess, (start, end) in SESSIONS.items():
+            for tp, sl in TP_SL_GRID:
+                keys.append((sid, instr, sess, start, end, tp, sl))
     return keys
 
 
@@ -166,35 +168,42 @@ def _run_backtest(signals: pd.DataFrame, point_value: float) -> dict:
     }
 
 
-def _output_path(out_dir: Path, batch_id: int, n_batches: int) -> Path:
-    if n_batches <= 1:
-        return out_dir / "paper1_comprehensive_sweep.csv"
-    return out_dir / f"paper1_comprehensive_sweep_batch_{batch_id}_of_{n_batches}.csv"
-
-
 # ---------------------------------------------------------------------------
-# Multiprocessing worker helpers
+# Multiprocessing worker helpers (one instrument at a time)
 # ---------------------------------------------------------------------------
 
-_worker_dfs: dict[str, pd.DataFrame] = {}
+_worker_instr: str = ""
+_worker_df: pd.DataFrame | None = None
+_worker_pv: float = 0.0
 
 
-def _worker_init(data_dir: str):
-    """Load all instrument data once per worker process."""
-    global _worker_dfs
-    root = Path(data_dir)
-    for instr in INSTRUMENTS:
-        df = load_market_data(root / f"{instr}_1min.parquet")
+def _worker_init(instr: str, data_dir: str):
+    """Load a single instrument in the parent; workers inherit it via fork/COW."""
+    global _worker_instr, _worker_df, _worker_pv
+    _worker_instr = instr
+    _worker_pv = POINT_VALUES[instr]
+    # Data is loaded by the parent and passed in; this function just binds it.
+    # If called directly (rare), load from disk as fallback.
+    if _worker_df is None:
+        df = load_market_data(Path(data_dir) / f"{instr}_1min.parquet")
         df = df.copy()
         df["atr"] = _atr(df, 14)
-        _worker_dfs[instr] = df
+        _worker_df = df
+
+
+def _worker_set_df(df: pd.DataFrame):
+    """Called in the parent before forking so workers inherit the DataFrame."""
+    global _worker_df
+    _worker_df = df
 
 
 def _worker_run(key: tuple) -> list[dict]:
     """Generate signals for one key and run all runner modes."""
     sid, instr, sess, start, end, tp, sl = key
     cfg = _build_cfg(sid, instr, sess, start, end, tp, sl)
-    df = _worker_dfs[instr]
+    df = _worker_df
+    if df is None:
+        return []
     mask = get_session_mask(df, cfg["session_start"], cfg["session_end"], cfg["tz"])
     df_s = split_by_date(df.loc[mask].copy(), "2016-06-01", "2026-05-29")
     signals = generate_signals(df_s, cfg)
@@ -212,7 +221,7 @@ def _worker_run(key: tuple) -> list[dict]:
                 kw["session_end_time"] = pd.Timestamp(end).time()
             runner_signals = apply_runner_to_signals(df, signals, **kw)
 
-        stats = _run_backtest(runner_signals, POINT_VALUES[instr])
+        stats = _run_backtest(runner_signals, _worker_pv)
         if not stats:
             continue
 
@@ -230,14 +239,21 @@ def _worker_run(key: tuple) -> list[dict]:
     return records
 
 
+def _output_path(out_dir: Path, batch_id: int, n_batches: int) -> Path:
+    if n_batches <= 1:
+        return out_dir / "paper1_comprehensive_sweep.csv"
+    return out_dir / f"paper1_comprehensive_sweep_batch_{batch_id}_of_{n_batches}.csv"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run the comprehensive Paper-1 sweep.")
     parser.add_argument("--batch-id", type=int, default=0)
     parser.add_argument("--n-batches", type=int, default=1)
-    parser.add_argument("--workers", type=int, default=min(mp.cpu_count(), 14))
+    parser.add_argument("--workers", type=int, default=min(mp.cpu_count(), 16))
     parser.add_argument("--data-dir", type=str, default=str(_PROJECT_ROOT / "data"))
     parser.add_argument("--output-dir", type=str, default=str(_PROJECT_ROOT / "gh_results"))
-    parser.add_argument("--flush-every", type=int, default=100, help="Write CSV every N keys")
+    parser.add_argument("--flush-every", type=int, default=25, help="Write CSV every N keys")
+    parser.add_argument("--instrument", type=str, default=None, help="Run a single instrument (NQ/ES/YM)")
     args = parser.parse_args()
 
     if args.n_batches < 1:
@@ -249,37 +265,54 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    keys = _all_signal_keys()
-    my_keys = [k for i, k in enumerate(keys) if i % args.n_batches == args.batch_id]
-    n_keys = len(my_keys)
-    n_combos = n_keys * len(RUNNER_MODES)
-    print(
-        f"Batch {args.batch_id}/{args.n_batches}: {n_keys} signal keys -> "
-        f"~{n_combos} combos using {args.workers} workers"
-    )
+    instruments = [args.instrument] if args.instrument else INSTRUMENTS
+    if args.instrument and args.instrument not in INSTRUMENTS:
+        raise ValueError(f"--instrument must be one of {INSTRUMENTS}")
 
     out_path = _output_path(out_dir, args.batch_id, args.n_batches)
-    records: list[dict] = []
-    completed = 0
+    all_records: list[dict] = []
 
-    with mp.Pool(processes=args.workers, initializer=_worker_init, initargs=(str(data_dir),)) as pool:
-        for result in pool.imap_unordered(_worker_run, my_keys):
-            records.extend(result)
-            completed += 1
-            if completed % args.flush_every == 0:
-                pd.DataFrame(records)[OUTPUT_COLUMNS].to_csv(out_path, index=False)
-                last = result[-1] if result else {}
-                print(
-                    f"[{completed}/{n_keys}] keys done, {len(records)} records, "
-                    f"last: {last.get('strategy_id','')} {last.get('instrument','')} "
-                    f"{last.get('session','')} {last.get('mode','')} "
-                    f"weekly=${last.get('avg_per_week',0):.0f}"
-                )
+    for instr in instruments:
+        print(f"Loading {instr} data...")
+        df = load_market_data(data_dir / f"{instr}_1min.parquet")
+        df = df.copy()
+        df["atr"] = _atr(df, 14)
+        _worker_set_df(df)
 
-    if records:
-        df_out = pd.DataFrame(records)[OUTPUT_COLUMNS]
+        keys = _signal_keys_for_instrument(instr)
+        my_keys = [k for i, k in enumerate(keys) if i % args.n_batches == args.batch_id]
+        n_keys = len(my_keys)
+        n_combos = n_keys * len(RUNNER_MODES)
+        print(
+            f"Instrument {instr}: {n_keys} signal keys -> ~{n_combos} combos using {args.workers} workers"
+        )
+
+        completed = 0
+        with mp.Pool(
+            processes=args.workers,
+            initializer=_worker_init,
+            initargs=(instr, str(data_dir)),
+        ) as pool:
+            for result in pool.imap_unordered(_worker_run, my_keys):
+                all_records.extend(result)
+                completed += 1
+                if completed % args.flush_every == 0:
+                    pd.DataFrame(all_records)[OUTPUT_COLUMNS].to_csv(out_path, index=False)
+                    last = result[-1] if result else {}
+                    print(
+                        f"  [{instr}] {completed}/{n_keys} keys, {len(all_records)} total records, "
+                        f"last={last.get('strategy_id','')} {last.get('session','')} {last.get('mode','')} "
+                        f"weekly=${last.get('avg_per_week',0):.0f}"
+                    )
+
+        # Force free the instrument DataFrame before loading the next one.
+        _worker_set_df(None)
+        del df
+
+    if all_records:
+        df_out = pd.DataFrame(all_records)[OUTPUT_COLUMNS]
         df_out.to_csv(out_path, index=False)
-        print(f"Wrote {len(records)} rows to {out_path}")
+        print(f"Wrote {len(all_records)} rows to {out_path}")
     else:
         print("No records produced")
 
