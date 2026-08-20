@@ -7,27 +7,32 @@
 #     reused across runner modes to avoid redundant generation.
 #   - Supports --batch-id/--n-batches partitioning for GitHub Actions; writes
 #     a single CSV (or per-batch partition when n_batches > 1).
-# WHY: The Paper-1 comprehensive sweep needs a dedicated, reusable runner that
-#      produces the exact CSV schema expected by the aggregation/ranking step.
+# 2026-08-19  kilo
+#   - Replaced the single-threaded combo loop with multiprocessing.Pool so
+#     signal generation (the bottleneck, especially ICT Silver Bullet) runs in
+#     parallel across CPU cores. Each worker loads its own data copy and
+#     applies all runner modes for one signal key, returning a list of records.
+#   - Added --workers CLI argument (defaults to min(mp.cpu_count(), 14)) and
+#     periodic CSV flushes so results are visible before the sweep finishes.
+#   - Added _all_signal_keys() so the pool parallelizes over unique signal
+#     generation keys rather than over raw combos, while still emitting one row
+#     per (id, instrument, session, tp, sl, mode).
+# WHY: The original single-threaded sweep was projected to take days. Even
+#      without vectorizing the slowest blueprint, parallelizing brings the full
+#      Paper-1 sweep down to a few hours on a 16-core machine.
 
 #!/usr/bin/env python3
-"""Comprehensive Paper-1 sweep runner.
-
-Full grid: 100 strategy IDs x NQ/ES/YM x Asian/London/NY x 12 (tp,sl) pairs x
-4 runner modes.  Signals are cached per (id, instrument, session, tp, sl) and
-reused across modes.  Topstep reset-on-failure is enabled so blown accounts
-model buying a new combine.
-"""
+"""Comprehensive Paper-1 sweep runner (multiprocessing)."""
 from __future__ import annotations
 
 import argparse
+import multiprocessing as mp
 import sys
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-import numpy as np
 import pandas as pd
 
 from topstep_strats.backtest import run_backtest
@@ -93,15 +98,15 @@ OUTPUT_COLUMNS = [
 ]
 
 
-def _all_combos() -> list[tuple]:
-    combos = []
+def _all_signal_keys() -> list[tuple]:
+    """Unique signal-generation keys: one per (id, instrument, session, tp, sl)."""
+    keys = []
     for sid in list_strategy_ids():
         for instr in INSTRUMENTS:
             for sess, (start, end) in SESSIONS.items():
                 for tp, sl in TP_SL_GRID:
-                    for mode_name, kwargs in RUNNER_MODES:
-                        combos.append((sid, instr, sess, start, end, tp, sl, mode_name, kwargs))
-    return combos
+                    keys.append((sid, instr, sess, start, end, tp, sl))
+    return keys
 
 
 def _build_cfg(sid: str, instrument: str, session: str, start: str, end: str, tp: float, sl: float) -> dict:
@@ -167,12 +172,72 @@ def _output_path(out_dir: Path, batch_id: int, n_batches: int) -> Path:
     return out_dir / f"paper1_comprehensive_sweep_batch_{batch_id}_of_{n_batches}.csv"
 
 
+# ---------------------------------------------------------------------------
+# Multiprocessing worker helpers
+# ---------------------------------------------------------------------------
+
+_worker_dfs: dict[str, pd.DataFrame] = {}
+
+
+def _worker_init(data_dir: str):
+    """Load all instrument data once per worker process."""
+    global _worker_dfs
+    root = Path(data_dir)
+    for instr in INSTRUMENTS:
+        df = load_market_data(root / f"{instr}_1min.parquet")
+        df = df.copy()
+        df["atr"] = _atr(df, 14)
+        _worker_dfs[instr] = df
+
+
+def _worker_run(key: tuple) -> list[dict]:
+    """Generate signals for one key and run all runner modes."""
+    sid, instr, sess, start, end, tp, sl = key
+    cfg = _build_cfg(sid, instr, sess, start, end, tp, sl)
+    df = _worker_dfs[instr]
+    mask = get_session_mask(df, cfg["session_start"], cfg["session_end"], cfg["tz"])
+    df_s = split_by_date(df.loc[mask].copy(), "2016-06-01", "2026-05-29")
+    signals = generate_signals(df_s, cfg)
+
+    if signals is None or signals.empty:
+        return []
+
+    records: list[dict] = []
+    for mode_name, kwargs in RUNNER_MODES:
+        if mode_name == "baseline":
+            runner_signals = signals.copy()
+        else:
+            kw = dict(kwargs)
+            if kw.get("mode") == "hold_session":
+                kw["session_end_time"] = pd.Timestamp(end).time()
+            runner_signals = apply_runner_to_signals(df, signals, **kw)
+
+        stats = _run_backtest(runner_signals, POINT_VALUES[instr])
+        if not stats:
+            continue
+
+        records.append(
+            {
+                "strategy_id": sid,
+                "instrument": instr,
+                "session": sess,
+                "tp": tp,
+                "sl": sl,
+                "mode": mode_name,
+                **stats,
+            }
+        )
+    return records
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run the comprehensive Paper-1 sweep.")
     parser.add_argument("--batch-id", type=int, default=0)
     parser.add_argument("--n-batches", type=int, default=1)
+    parser.add_argument("--workers", type=int, default=min(mp.cpu_count(), 14))
     parser.add_argument("--data-dir", type=str, default=str(_PROJECT_ROOT / "data"))
     parser.add_argument("--output-dir", type=str, default=str(_PROJECT_ROOT / "gh_results"))
+    parser.add_argument("--flush-every", type=int, default=100, help="Write CSV every N keys")
     args = parser.parse_args()
 
     if args.n_batches < 1:
@@ -184,71 +249,35 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load all instruments once and pre-compute ATR for the runner.
-    dfs: dict[str, pd.DataFrame] = {}
-    for instr in INSTRUMENTS:
-        df = load_market_data(data_dir / f"{instr}_1min.parquet")
-        df = df.copy()
-        df["atr"] = _atr(df, 14)
-        dfs[instr] = df
+    keys = _all_signal_keys()
+    my_keys = [k for i, k in enumerate(keys) if i % args.n_batches == args.batch_id]
+    n_keys = len(my_keys)
+    n_combos = n_keys * len(RUNNER_MODES)
+    print(
+        f"Batch {args.batch_id}/{args.n_batches}: {n_keys} signal keys -> "
+        f"~{n_combos} combos using {args.workers} workers"
+    )
 
-    combos = _all_combos()
-    my_combos = [c for i, c in enumerate(combos) if i % args.n_batches == args.batch_id]
-    print(f"Batch {args.batch_id}/{args.n_batches}: {len(my_combos)} combos")
-
-    # Cache only the most recent signal set.  The combo order keeps all modes for
-    # a given (id, instrument, session, tp, sl) together, so signals are reused
-    # across the 4 runner modes without accumulating every key in memory.
-    last_key: tuple | None = None
-    last_signals: pd.DataFrame | None = None
+    out_path = _output_path(out_dir, args.batch_id, args.n_batches)
     records: list[dict] = []
+    completed = 0
 
-    for idx, (sid, instr, sess, start, end, tp, sl, mode_name, kwargs) in enumerate(my_combos, start=1):
-        cache_key = (sid, instr, sess, tp, sl)
-        if cache_key != last_key:
-            cfg = _build_cfg(sid, instr, sess, start, end, tp, sl)
-            df = dfs[instr]
-            mask = get_session_mask(df, cfg["session_start"], cfg["session_end"], cfg["tz"])
-            df_s = split_by_date(df.loc[mask].copy(), "2016-06-01", "2026-05-29")
-            last_signals = generate_signals(df_s, cfg)
-            last_key = cache_key
-
-        signals = last_signals
-        if signals is None or signals.empty:
-            continue
-
-        if mode_name == "baseline":
-            runner_signals = signals.copy()
-        else:
-            kw = dict(kwargs)
-            if kw.get("mode") == "hold_session":
-                kw["session_end_time"] = pd.Timestamp(end).time()
-            runner_signals = apply_runner_to_signals(dfs[instr], signals, **kw)
-
-        stats = _run_backtest(runner_signals, POINT_VALUES[instr])
-        if not stats:
-            continue
-
-        record = {
-            "strategy_id": sid,
-            "instrument": instr,
-            "session": sess,
-            "tp": tp,
-            "sl": sl,
-            "mode": mode_name,
-            **stats,
-        }
-        records.append(record)
-        print(
-            f"[{idx}/{len(my_combos)}] {sid} {instr} {sess} tp={tp} sl={sl} {mode_name} "
-            f"wr={stats['win_rate']:.1%} trades={stats['executed_trades']:4d} "
-            f"weekly=${stats['avg_per_week']:.0f} blowups={stats['account_blowups']:3d} "
-            f"hold={stats['avg_hold_seconds']:.0f}s"
-        )
+    with mp.Pool(processes=args.workers, initializer=_worker_init, initargs=(str(data_dir),)) as pool:
+        for result in pool.imap_unordered(_worker_run, my_keys):
+            records.extend(result)
+            completed += 1
+            if completed % args.flush_every == 0:
+                pd.DataFrame(records)[OUTPUT_COLUMNS].to_csv(out_path, index=False)
+                last = result[-1] if result else {}
+                print(
+                    f"[{completed}/{n_keys}] keys done, {len(records)} records, "
+                    f"last: {last.get('strategy_id','')} {last.get('instrument','')} "
+                    f"{last.get('session','')} {last.get('mode','')} "
+                    f"weekly=${last.get('avg_per_week',0):.0f}"
+                )
 
     if records:
         df_out = pd.DataFrame(records)[OUTPUT_COLUMNS]
-        out_path = _output_path(out_dir, args.batch_id, args.n_batches)
         df_out.to_csv(out_path, index=False)
         print(f"Wrote {len(records)} rows to {out_path}")
     else:
