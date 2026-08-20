@@ -10,47 +10,10 @@
 #     The CSV is now attached to the `data-v1.0` release asset.
 #   - A final aggregate job downloads all artifacts, combines them, and uploads
 #     the final report + chart.
-# 2026-08-03  coder
-#   - Replaced the 2-strategy matrix with a 2-scenario Nitro CRT matrix
-#     (first_only = one entry per session, reentries = all setups).
-#   - Added --warmup-days 7 so each chunk sees prior HTF context; trades
-#     outside the chunk are dropped to avoid double counting.
-#   - Pinned strategy_params to htf_timeframe=5m / fixed_rr so the run
-#     matches the validated backtest instead of the default 1h (which
-#     produces a fake ~100% win rate).
-#   - Fixed look-ahead bias in nitro_crt.py: entries now use the NEXT bar's
-#     open instead of the signal bar's close.
-# 2026-08-03  coder
-#   - Added an instrument matrix dimension (NQ/ES/YM) so all three futures
-#     are backtested. Each job fetches the matching <INSTR>_1min.csv from the
-#     data-v1.0 release asset and passes --instrument so run_chunk.py applies
-#     the correct tick_size and point_value ($20/$50/$5).
-# 2026-08-04  coder
-#   - Fixed aggregate laptop-merge step: it used `cd /tmp` then `tar -C artifacts/`,
-#     but artifacts/ lives in the workspace root, so extraction failed (exit 2).
-#     The merge step now downloads to /tmp/laptop_dl and extracts into the
-#     workspace artifacts/ dir directly. YM slice then merges with NQ/ES.
-# 2026-08-03  coder
-#   - REWRITTEN for the full HTF/target sweep. The matrix is now
-#     instrument {NQ, ES} x htf {5m,15m,30m,1h,2h,4h} x target {fixed_rr,
-#     opposite} x scenario {first_only, reentries} = 48 config-jobs; each job
-#     runs scripts/run_sweep_job.py which loops all 20 overlapping chunks
-#     in-process (7-day warmup, out-of-range signals dropped) so adjacent
-#     chunks never skip or double-count a trade.
-#   - Data now comes from the compressed parquet assets in the data-v2.0
-#     release (~40MB/instrument vs ~190MB CSV), cutting download + parse time.
-#   - YM is NOT in the GH matrix: the Akpan laptop runs the YM slice with
-#     16 cores and uploads laptop_results.tar.gz to the data-v2.0 release;
-#     the aggregate job merges it automatically so all 3 instruments land in
-#     one final report.
-#   - Aggregate emits by_config (instrument x htf x target x scenario) plus a
-#     sweep_summary ranked by net points to settle which config is real.
-# WHY: The sweep must decide between the documented 1h config and the
-#      workflow's 5m pin across every timeframe and target mode, using all 20
-#      GitHub Actions runners and the laptop in parallel, with compressed data
-#      and a vectorized strategy to finish as fast as possible.
+# WHY: GitHub Actions provides 20 free concurrent workers; splitting the
+#      backtest by date keeps each job fast and artifact sizes small.
 
-name: Nitro CRT HTF/Target Sweep
+name: Topstep Parallel Backtest
 
 on:
   push:
@@ -58,15 +21,34 @@ on:
   workflow_dispatch:
 
 jobs:
-  sweep:
+  chunk:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        instrument: [NQ, ES]
-        htf: [5m, 15m, 30m, 1h, 2h, 4h]
-        target_mode: [fixed_rr, opposite]
-        scenario: [first_only, reentries]
+        strategy: [kasen_orb, nitro_crt]
+        chunk:
+          # 20 chunks covering the available NQ 1-minute data (2016-06-01 to 2026-05-29).
+          - {start: "2016-06-01", end: "2016-11-30"}
+          - {start: "2016-12-01", end: "2017-05-31"}
+          - {start: "2017-06-01", end: "2017-11-30"}
+          - {start: "2017-12-01", end: "2018-05-31"}
+          - {start: "2018-06-01", end: "2018-11-30"}
+          - {start: "2018-12-01", end: "2019-05-31"}
+          - {start: "2019-06-01", end: "2019-11-30"}
+          - {start: "2019-12-01", end: "2020-05-31"}
+          - {start: "2020-06-01", end: "2020-11-30"}
+          - {start: "2020-12-01", end: "2021-05-31"}
+          - {start: "2021-06-01", end: "2021-11-30"}
+          - {start: "2021-12-01", end: "2022-05-31"}
+          - {start: "2022-06-01", end: "2022-11-30"}
+          - {start: "2022-12-01", end: "2023-05-31"}
+          - {start: "2023-06-01", end: "2023-11-30"}
+          - {start: "2023-12-01", end: "2024-05-31"}
+          - {start: "2024-06-01", end: "2024-11-30"}
+          - {start: "2024-12-01", end: "2025-05-31"}
+          - {start: "2025-06-01", end: "2025-11-30"}
+          - {start: "2025-12-01", end: "2026-05-29"}
 
     steps:
       - name: Checkout repository
@@ -83,36 +65,34 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Fetch market data (parquet)
+      - name: Fetch NQ market data
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p /tmp/market_data
-          gh release download data-v2.0 --repo ${{ github.repository }} --pattern '${{ matrix.instrument }}_1min.parquet' --dir /tmp/market_data/
-          test -f /tmp/market_data/${{ matrix.instrument }}_1min.parquet
+          gh release download data-v1.0 --repo ${{ github.repository }} --pattern 'NQ_1min.csv' --dir /tmp/market_data/
+          test -f /tmp/market_data/NQ_1min.csv
 
-      - name: Run sweep config (20 overlapping chunks)
+      - name: Run backtest chunk
         env:
-          NQ_DATA_PATH: /tmp/market_data/${{ matrix.instrument }}_1min.parquet
+          NQ_DATA_PATH: /tmp/market_data/NQ_1min.csv
         run: |
-          python scripts/run_sweep_job.py \
-            --instrument ${{ matrix.instrument }} \
-            --htf ${{ matrix.htf }} \
-            --target-mode ${{ matrix.target_mode }} \
-            --scenario ${{ matrix.scenario }} \
-            --data-path /tmp/market_data/${{ matrix.instrument }}_1min.parquet \
-            --output-dir results/${{ matrix.instrument }}/${{ matrix.htf }}/${{ matrix.target_mode }}/${{ matrix.scenario }} \
-            --warmup-days 7
+          mkdir -p results
+          python scripts/run_chunk.py \
+            --strategy ${{ matrix.strategy }} \
+            --start-date ${{ matrix.chunk.start }} \
+            --end-date ${{ matrix.chunk.end }} \
+            --output results/result_${{ matrix.strategy }}_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.json
 
-      - name: Upload config artifact
+      - name: Upload chunk result
         uses: actions/upload-artifact@v4
         with:
-          name: config-${{ matrix.instrument }}-${{ matrix.htf }}-${{ matrix.target_mode }}-${{ matrix.scenario }}
-          path: results/${{ matrix.instrument }}/${{ matrix.htf }}/${{ matrix.target_mode }}/${{ matrix.scenario }}/
+          name: result-${{ matrix.strategy }}-${{ matrix.chunk.start }}-${{ matrix.chunk.end }}
+          path: results/result_${{ matrix.strategy }}_${{ matrix.chunk.start }}_${{ matrix.chunk.end }}.json
           if-no-files-found: error
 
   aggregate:
-    needs: sweep
+    needs: chunk
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -129,24 +109,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Download all config artifacts
+      - name: Download all chunk artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: config-*
+          pattern: result-*
           merge-multiple: true
-
-      - name: Merge laptop results (YM slice) if present
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # artifacts/ was created by download-artifact@v4 in the workspace root.
-          # Download the laptop tarball to /tmp, extract into that artifacts dir.
-          gh release download data-v2.0 --repo ${{ github.repository }} --pattern 'laptop_results.tar.gz' --dir /tmp/laptop_dl 2>/dev/null || echo "no laptop results yet"
-          if test -f /tmp/laptop_dl/laptop_results.tar.gz; then
-            tar -xzf /tmp/laptop_dl/laptop_results.tar.gz -C artifacts/
-            echo "merged laptop results"
-          fi
 
       - name: Aggregate results
         run: |

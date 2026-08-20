@@ -1,0 +1,18 @@
+# CHANGE_SUMMARY
+# 2026-08-20  kilo
+#   - C ABI cdylib for the 2000-Tick Price Action Master engine.
+# WHY: Independent Paper-2 strategy plugin loadable by the agnostic backtest engine.
+
+[package]
+name = "paper2_tick_price_action_2000"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "paper2_tick_price_action_2000"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde_json = "1.0"
+engine_abi = { path = "../../../engine_abi" }
+paper2_indicators = { path = "../paper2_indicators" }

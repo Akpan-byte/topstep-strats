@@ -6,25 +6,8 @@
 #     metrics) and emits a compact JSON artifact with scalar summary stats.
 #   - Falls back to a deterministic synthetic report when the strategy modules
 #     are not available, so smoke tests stay isolated from other work-streams.
-# 2026-08-03  coder
-#   - Added --scenario (first_only | reentries) which maps to
-#     strategy_params["first_setup_per_session"].
-#   - Added --warmup-days N: each chunk loads N days of leading data so the
-#     higher-timeframe CRT levels have context; signals outside the chunk range
-#     are dropped via _filter_signals_in_range so adjacent chunks never
-#     double-count a trade.
-#   - Emit "scenario" in the report so aggregation can separate the modes.
-# 2026-08-03  coder
-#   - Added --instrument (NQ/ES/YM) and emitted "instrument" in every report
-#     so the aggregate can separate instruments (different tick/point values).
-# 2026-08-03  coder
-#   - Added --htf and --target-mode flags that override strategy_params, and
-#     emit htf_timeframe / target_mode at the report top level so the sweep
-#     aggregate can group by (instrument, htf, target, scenario).
-# WHY: The 10-year run needs both one-entry-per-day and re-entry results, and
-#      overlapping chunks keep GitHub Actions jobs fast without boundary losses;
-#      the portfolio now spans NQ, ES, and YM. The HTF/target sweep reuses this
-#      entry point unchanged, just overriding the two swept dimensions.
+# WHY: The parallel workflow uploads one small JSON per chunk; aggregating
+#      huge equity curves / MC arrays would waste artifact storage.
 
 import argparse
 import hashlib
@@ -34,35 +17,6 @@ import random
 import sys
 from pathlib import Path
 from typing import Any, Dict
-
-from datetime import datetime, timedelta
-
-
-def _shift_days(date_str: str, days: int) -> str:
-    """Shift a YYYY-MM-DD date by ``days`` (negative moves earlier)."""
-    dt = datetime.strptime(date_str, "%Y-%m-%d")
-    return (dt + timedelta(days=days)).strftime("%Y-%m-%d")
-
-
-def _filter_signals_in_range(signals_df, start_date: str, end_date: str) -> Any:
-    """Drop trades whose entry_time falls outside [start_date, end_date].
-
-    Used with warmup overlap: the strategy sees extra leading bars for HTF
-    context, but only signals inside the chunk are counted, so adjacent chunk
-    artifacts never double-count a trade.
-    """
-    if signals_df is None or len(signals_df) == 0:
-        return signals_df
-    import pandas as pd
-
-    start_ts = pd.Timestamp(start_date)
-    end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-    entries = signals_df["entry_time"]
-    if hasattr(entries, "dt"):
-        mask = (entries.dt.tz_localize(None) >= start_ts) & (entries.dt.tz_localize(None) <= end_ts)
-    else:
-        mask = (entries >= start_ts) & (entries <= end_ts)
-    return signals_df[mask]
 
 
 INSTRUMENT_CONFIG = {
@@ -172,7 +126,7 @@ def _extract_metrics_summary(metrics: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _build_report(strategy, instrument, start_date, end_date, backtest_result, metrics, params):
+def _build_report(strategy, start_date, end_date, backtest_result, metrics, params):
     """Convert a full backtest + metrics result into a small aggregate-ready dict."""
     summary = backtest_result.get("summary", {}) if isinstance(backtest_result, dict) else {}
     metrics = metrics or {}
@@ -180,7 +134,6 @@ def _build_report(strategy, instrument, start_date, end_date, backtest_result, m
 
     report = {
         "strategy": strategy,
-        "instrument": instrument,
         "start_date": start_date,
         "end_date": end_date,
         "params": params,
@@ -227,7 +180,7 @@ def _build_report(strategy, instrument, start_date, end_date, backtest_result, m
     return report
 
 
-def _synthetic_flat_report(strategy, instrument, start_date, end_date, params, rng):
+def _synthetic_flat_report(strategy, start_date, end_date, params, rng):
     """Single-mode synthetic record."""
     trades = rng.randint(50, 500)
     win_rate = rng.uniform(0.35, 0.55)
@@ -242,7 +195,6 @@ def _synthetic_flat_report(strategy, instrument, start_date, end_date, params, r
     final_equity = 100_000.0 + gross_profit + gross_loss
     return {
         "strategy": strategy,
-        "instrument": instrument,
         "start_date": start_date,
         "end_date": end_date,
         "params": params,
@@ -274,19 +226,18 @@ def _synthetic_flat_report(strategy, instrument, start_date, end_date, params, r
     }
 
 
-def _synthetic_report(strategy, instrument, start_date, end_date, params):
+def _synthetic_report(strategy, start_date, end_date, params):
     """Deterministic placeholder used during smoke tests / cross-agent development."""
     seed = int(hashlib.md5(f"{strategy}:{start_date}:{end_date}".encode()).hexdigest(), 16)
     rng = random.Random(seed)
-    raw = _synthetic_flat_report(strategy, instrument, start_date, end_date, params, rng)
-    topstep = _synthetic_flat_report(strategy, instrument, start_date, end_date, params, rng)
+    raw = _synthetic_flat_report(strategy, start_date, end_date, params, rng)
+    topstep = _synthetic_flat_report(strategy, start_date, end_date, params, rng)
     topstep["topstep_enabled"] = True
     topstep["daily_limit_hits"] = rng.randint(0, 3)
     topstep["trailing_limit_hits"] = int(rng.random() < 0.1)
     topstep["account_failed"] = topstep["trailing_limit_hits"] > 0
     return {
         "strategy": strategy,
-        "instrument": instrument,
         "start_date": start_date,
         "end_date": end_date,
         "params": params,
@@ -300,18 +251,6 @@ def main(argv=None):
     parser.add_argument("--strategy", required=True, choices=["kasen_orb", "nitro_crt"])
     parser.add_argument("--start-date", required=True, help="Chunk start (YYYY-MM-DD)")
     parser.add_argument("--end-date", required=True, help="Chunk end (YYYY-MM-DD)")
-    parser.add_argument(
-        "--scenario",
-        default="reentries",
-        choices=["first_only", "reentries"],
-        help="Nitro CRT scenario: first_only = one entry per session, reentries = multiple per day",
-    )
-    parser.add_argument(
-        "--warmup-days",
-        type=int,
-        default=7,
-        help="Load N days before start_date so HTF CRT levels have context; trades outside the chunk are dropped",
-    )
     parser.add_argument("--output", required=True, help="Path to write JSON result")
     parser.add_argument(
         "--instrument",
@@ -332,18 +271,6 @@ def main(argv=None):
         default=None,
         help="JSON dict with strategy_params / backtest_params / metrics_kwargs",
     )
-    parser.add_argument(
-        "--htf",
-        default=None,
-        choices=["5m", "15m", "30m", "1h", "2h", "4h"],
-        help="Override strategy_params.htf_timeframe (used by the sweep)",
-    )
-    parser.add_argument(
-        "--target-mode",
-        default=None,
-        choices=["fixed_rr", "opposite"],
-        help="Override strategy_params.target_mode (used by the sweep)",
-    )
     args = parser.parse_args(argv)
 
     data_path = Path(args.data_path)
@@ -359,14 +286,6 @@ def main(argv=None):
     # Merge instrument defaults into params without overwriting user values.
     strategy_params = {**(params.get("strategy_params") or {})}
     strategy_params.setdefault("tick_size", inst_cfg["tick_size"])
-    # Scenario selection: first_only = one setup per session, reentries = all.
-    strategy_params["first_setup_per_session"] = (args.scenario == "first_only")
-    # Sweep overrides: --htf / --target-mode win over the params blob so the
-    # sweep matrix can pivot on these two dimensions without editing JSON.
-    if args.htf:
-        strategy_params["htf_timeframe"] = args.htf
-    if args.target_mode:
-        strategy_params["target_mode"] = args.target_mode
     params["strategy_params"] = strategy_params
 
     backtest_params = {**(params.get("backtest_params") or {})}
@@ -380,29 +299,14 @@ def main(argv=None):
         modules = load_modules()
 
     if modules is None:
-        report = _synthetic_report(args.strategy, args.instrument, args.start_date, args.end_date, params)
-        # Keep top-level grouping keys consistent with the real path so the
-        # sweep aggregate can group synthetic chunks the same way.
-        report["scenario"] = args.scenario
-        report["htf_timeframe"] = strategy_params.get("htf_timeframe", "5m")
-        report["target_mode"] = strategy_params.get("target_mode", "fixed_rr")
+        report = _synthetic_report(args.strategy, args.start_date, args.end_date, params)
     else:
         df_1m = modules["load_market_data"](str(data_path))
+        df_chunk = modules["split_by_date"](df_1m, args.start_date, args.end_date)
 
-        # Load a warmup overlap before start_date so the higher-timeframe CRT
-        # levels have prior context (prev_low/prev_high). Overlapping chunks
-        # keep each GitHub Actions job fast while the aggregate drops duplicate
-        # boundary work because we slice trades back to the chunk range below.
-        if args.warmup_days > 0:
-            warm_start = _shift_days(args.start_date, -args.warmup_days)
-        else:
-            warm_start = args.start_date
-        df_warm = modules["split_by_date"](df_1m, warm_start, args.end_date)
-
-        if df_warm.empty:
+        if df_chunk.empty:
             report = _build_report(
                 args.strategy,
-                args.instrument,
                 args.start_date,
                 args.end_date,
                 {"trades": [], "equity_curve": [], "summary": {}},
@@ -411,11 +315,7 @@ def main(argv=None):
             )
         else:
             strategy_mod = modules["strategies"][args.strategy]
-            signals = strategy_mod.generate_signals(df_warm, params.get("strategy_params"))
-
-            # Drop signals outside the requested chunk (warmup produced them).
-            signals = _filter_signals_in_range(signals, args.start_date, args.end_date)
-
+            signals = strategy_mod.generate_signals(df_chunk, params.get("strategy_params"))
             metrics_kwargs = params.get("metrics_kwargs", {})
 
             # Raw backtest: no Topstep rule enforcement.
@@ -423,7 +323,6 @@ def main(argv=None):
             raw_metrics = modules["calculate_metrics"](raw_bt, **metrics_kwargs)
             raw_report = _build_report(
                 args.strategy,
-                args.instrument,
                 args.start_date,
                 args.end_date,
                 raw_bt,
@@ -438,7 +337,6 @@ def main(argv=None):
             topstep_metrics = modules["calculate_metrics"](topstep_bt, **metrics_kwargs)
             topstep_report = _build_report(
                 args.strategy,
-                args.instrument,
                 args.start_date,
                 args.end_date,
                 topstep_bt,
@@ -448,10 +346,6 @@ def main(argv=None):
 
             report = {
                 "strategy": args.strategy,
-                "instrument": args.instrument,
-                "scenario": args.scenario,
-                "htf_timeframe": strategy_params.get("htf_timeframe", "5m"),
-                "target_mode": strategy_params.get("target_mode", "fixed_rr"),
                 "start_date": args.start_date,
                 "end_date": args.end_date,
                 "params": params,

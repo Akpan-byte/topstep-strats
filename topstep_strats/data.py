@@ -5,12 +5,12 @@
 #   - resample_timeframe aggregates OHLCV with pandas resample rules.
 #   - split_by_date filters inclusive date ranges from string or datetime inputs.
 #   - get_session_mask converts UTC index to NY time and masks RTH session bars.
-# 2026-08-03  coder
-#   - load_market_data now auto-detects zstd-compressed Parquet (preferred for
-#     the 10-year HTF/target sweep) and falls back to pyarrow CSV. Parquet loads
-#     ~2x faster and is ~5x smaller, cutting per-job download + parse time.
-# WHY: Provide a fast, consistent data layer for all strategy/backtest agents,
-#      and keep the 1440-job sweep I/O-bound-free on GitHub Actions runners.
+# 2026-08-19  kilo
+#   - Added load_instrument_data(instrument, data_dir) for NQ/ES/YM 1m parquet.
+#   - load_market_data now supports both parquet and CSV inputs.
+#   - load_nq_data defaults to data/NQ_1min.parquet, falling back to CSV.
+# WHY: The data-v2.0 release ships ES/NQ/YM 1-minute bars as parquet files;
+#      strategies and backtests need a single helper that loads any instrument.
 
 from __future__ import annotations
 
@@ -21,57 +21,129 @@ import pandas as pd
 
 DateLike = Union[str, pd.Timestamp]
 
+# Valid instruments shipped in the data-v2.0 release.
+INSTRUMENTS = {"NQ", "ES", "YM"}
 
-def load_market_data(csv_path: str) -> pd.DataFrame:
-    """Load a 1-minute futures dataset into a UTC-indexed DataFrame.
+
+def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Lower-case columns and ensure the required OHLCV set is present."""
+    df = df.copy()
+    df.columns = [c.lower() for c in df.columns]
+    required = {"open", "high", "low", "close", "volume"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+    return df[df.columns.intersection(required)].copy()
+
+
+def _load_csv(path: Path) -> pd.DataFrame:
+    """Load a 1-minute futures CSV into a UTC-indexed DataFrame."""
+    # PyArrow engine parses large CSVs significantly faster than the C engine.
+    df = pd.read_csv(
+        path,
+        engine="pyarrow",
+        dtype={"open": "float64", "high": "float64", "low": "float64", "close": "float64", "volume": "int64"},
+    )
+
+    if "timestamp" not in df.columns:
+        raise ValueError("CSV must contain a 'timestamp' column")
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    return df.set_index("timestamp").sort_index()
+
+
+def _load_parquet(path: Path) -> pd.DataFrame:
+    """Load a 1-minute futures parquet file into a UTC-indexed DataFrame."""
+    df = pd.read_parquet(path)
+
+    # Parquet files may store the timestamp as a column or as the index.
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        df = df.set_index("timestamp")
+
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
+    else:
+        df.index = df.index.tz_convert("UTC")
+
+    return df.sort_index()
+
+
+def load_market_data(path: str) -> pd.DataFrame:
+    """Load a 1-minute futures CSV or parquet into a UTC-indexed DataFrame.
 
     Parameters
     ----------
-    csv_path:
-        Path to a CSV (columns timestamp,open,high,low,close,volume) or a
-        zstd-compressed Parquet file with the same schema. Parquet is
-        preferred for large datasets because it loads several times faster
-        and is ~5x smaller on disk.
+    path:
+        Path to CSV or parquet with columns timestamp,open,high,low,close,volume.
 
     Returns
     -------
     DataFrame indexed by ``timestamp`` (UTC datetime64) with lowercase
     columns open/high/low/close/volume.
     """
-    path = Path(csv_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Market data not found at {csv_path}")
+    data_path = Path(path)
+    if not data_path.exists():
+        raise FileNotFoundError(f"Market data not found at {path}")
 
-    if path.suffix.lower() in (".parquet", ".pq"):
-        df = pd.read_parquet(path)
-        if df.index.name == "timestamp" or isinstance(df.index, pd.DatetimeIndex):
-            df = df.reset_index()
+    suffix = data_path.suffix.lower()
+    if suffix == ".parquet":
+        df = _load_parquet(data_path)
+    elif suffix == ".csv":
+        df = _load_csv(data_path)
     else:
-        # PyArrow engine parses large CSVs significantly faster than the C engine.
-        df = pd.read_csv(
-            path,
-            engine="pyarrow",
-            dtype={"open": "float64", "high": "float64", "low": "float64", "close": "float64", "volume": "int64"},
-        )
+        raise ValueError(f"Unsupported file extension: {suffix!r} (expected .csv or .parquet)")
 
-    if "timestamp" not in df.columns:
-        raise ValueError("Data must contain a 'timestamp' column")
-
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    df = df.set_index("timestamp").sort_index()
-    df.columns = [c.lower() for c in df.columns]
-
-    required = {"open", "high", "low", "close", "volume"}
-    missing = required - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
-
-    return df[df.columns.intersection(required)].copy()
+    return _normalize_columns(df)
 
 
-def load_nq_data(csv_path: str = "/tmp/market_data/NQ_1min.csv") -> pd.DataFrame:
-    """Backward-compatible alias for load_market_data."""
-    return load_market_data(csv_path)
+def load_nq_data(path: str | None = None) -> pd.DataFrame:
+    """Backward-compatible alias for load_market_data.
+
+    Defaults to ``data/NQ_1min.parquet`` (data-v2.0 release) when no path is
+    supplied, falling back to the legacy CSV locations for compatibility.
+    """
+    if path is not None:
+        return load_market_data(path)
+
+    project_root = Path(__file__).resolve().parent.parent
+    candidates = [
+        project_root / "data" / "NQ_1min.parquet",
+        Path("/tmp/market_data/NQ_1min.parquet"),
+        project_root / "data" / "NQ_1min.csv",
+        Path("/tmp/market_data/NQ_1min.csv"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return load_market_data(str(candidate))
+
+    raise FileNotFoundError("NQ 1-minute data not found in data/ or /tmp/market_data/")
+
+
+def load_instrument_data(instrument: str, data_dir: str) -> pd.DataFrame:
+    """Load 1-minute OHLCV data for a supported futures instrument.
+
+    Parameters
+    ----------
+    instrument:
+        One of ``NQ``, ``ES``, or ``YM`` (case-insensitive).
+    data_dir:
+        Directory containing ``{instrument}_1min.parquet`` from the data-v2.0
+        release.
+
+    Returns
+    -------
+    DataFrame indexed by UTC timestamp with lowercase open/high/low/close/volume.
+    """
+    symbol = instrument.upper()
+    if symbol not in INSTRUMENTS:
+        raise ValueError(f"Unsupported instrument: {instrument!r}; expected one of {sorted(INSTRUMENTS)}")
+
+    path = Path(data_dir) / f"{symbol}_1min.parquet"
+    if not path.exists():
+        raise FileNotFoundError(f"Instrument data not found at {path}")
+
+    return load_market_data(str(path))
 
 
 def _normalize_timeframe(timeframe: str) -> str:
@@ -109,9 +181,13 @@ def resample_timeframe(df: pd.DataFrame, timeframe: str = "15m") -> pd.DataFrame
         "volume": "sum",
     }
 
-    # Keep only columns we know how to aggregate.
+    # Keep only columns we know how to aggregate.  Drop any attrs cached by
+    # Numba/array helpers so pandas concat's __finalize__ does not try to
+    # compare numpy arrays (which raises "ambiguous array" ValueError).
     cols = [c for c in agg if c in df.columns]
-    resampled = df[cols].resample(tf, label="left", closed="left").agg({c: agg[c] for c in cols})
+    clean = df[cols].copy()
+    clean.attrs = {}
+    resampled = clean.resample(tf, label="left", closed="left").agg({c: agg[c] for c in cols})
     return resampled.dropna()
 
 

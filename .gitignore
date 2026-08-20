@@ -5,12 +5,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
-.venv-test/
-laptop_results/
-laptop_results_es/
-laptop_results_nq_fixed/
-laptop_results_ym/
-laptop_run.log
 
 # Local outputs
 smoke_report/
@@ -29,3 +23,19 @@ artifacts/
 *.swp
 *.swo
 *~
+
+# Rust
+engine_rust/target/
+engine_rust/Cargo.lock
+
+# Local venv names
+.venv312/
+
+# Compiled extensions / build artifacts
+*.so
+*.dylib
+*.dll
+engine_rust/strategies/**/Cargo.lock
+
+# Local sweep outputs
+gh_results/

@@ -1,0 +1,118 @@
+# CHANGE_SUMMARY
+# 2026-08-20  kilo
+#   - Created paper2_sweep.yml to run the Paper-2 Rust/PyO3 sweep on
+#     20 GitHub Actions workers.
+#   - Each worker installs Python 3.12, Rust stable, builds the
+#     agnostic_backtest extension with `maturin develop --release`, downloads
+#     the data-v2.0 ES/NQ/YM parquet assets, and runs a deterministic slice of
+#     the 108 Paper-2 strategy IDs through engine_rust/scripts/sweep_engine.py
+#     for both 50k and 150k Topstep account sizes.
+#   - Per-worker CSVs are uploaded as artifacts.
+# WHY: Offload the Paper-2 sweep from the laptop/VM to GitHub Actions while
+#      keeping each runner memory-safe with --workers 1.
+
+name: Paper 2 Rust Sweep
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    name: Paper-2 Rust sweep
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        batch:
+          - {start: 0, end: 6}
+          - {start: 6, end: 12}
+          - {start: 12, end: 18}
+          - {start: 18, end: 24}
+          - {start: 24, end: 30}
+          - {start: 30, end: 36}
+          - {start: 36, end: 42}
+          - {start: 42, end: 48}
+          - {start: 48, end: 53}
+          - {start: 53, end: 58}
+          - {start: 58, end: 63}
+          - {start: 63, end: 68}
+          - {start: 68, end: 73}
+          - {start: 73, end: 78}
+          - {start: 78, end: 83}
+          - {start: 83, end: 88}
+          - {start: 88, end: 93}
+          - {start: 93, end: 98}
+          - {start: 98, end: 103}
+          - {start: 103, end: 108}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install maturin
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust extension
+        run: |
+          cd engine_rust
+          maturin develop --release
+
+      - name: Fetch ES/NQ/YM market data (data-v2.0 parquet)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p data
+          gh release download data-v2.0 --repo ${{ github.repository }} \
+            --pattern 'ES_1min.parquet' --pattern 'NQ_1min.parquet' --pattern 'YM_1min.parquet' \
+            --dir data/
+          test -f data/ES_1min.parquet
+          test -f data/NQ_1min.parquet
+          test -f data/YM_1min.parquet
+
+      - name: Run Paper-2 sweep batch (50k + 150k)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          OUT_DIR="gh_results/paper2_worker_${{ matrix.batch.start }}_${{ matrix.batch.end }}"
+          mkdir -p "$OUT_DIR"
+          python engine_rust/scripts/sweep_engine.py \
+            --paper paper2 \
+            --account-size 50k \
+            --workers 1 \
+            --id-start ${{ matrix.batch.start }} \
+            --id-end ${{ matrix.batch.end }} \
+            --topstep \
+            --overwrite \
+            --data-dir data \
+            --output-dir "$OUT_DIR"
+          python engine_rust/scripts/sweep_engine.py \
+            --paper paper2 \
+            --account-size 150k \
+            --workers 1 \
+            --id-start ${{ matrix.batch.start }} \
+            --id-end ${{ matrix.batch.end }} \
+            --topstep \
+            --overwrite \
+            --data-dir data \
+            --output-dir "$OUT_DIR"
+
+      - name: Upload Paper-2 batch CSVs
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper2-worker-${{ matrix.batch.start }}-${{ matrix.batch.end }}
+          path: gh_results/paper2_worker_${{ matrix.batch.start }}_${{ matrix.batch.end }}/*.csv
+          if-no-files-found: error

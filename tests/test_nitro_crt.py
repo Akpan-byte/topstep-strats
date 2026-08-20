@@ -118,9 +118,7 @@ def test_empty_dataframe():
 
 def test_long_crt_columns_and_exit_reason():
     df = _make_crt_sample()
-    # The synthetic design intends a fill at the signal close; entry_mode was
-    # changed to next_open (no look-ahead) so pin signal_close here explicitly.
-    sig = nitro_crt.generate_signals(df, params={"entry_mode": "signal_close"})
+    sig = nitro_crt.generate_signals(df)
     assert not sig.empty
     for col in [
         "entry_time", "direction", "entry_price", "stop_loss",
@@ -134,7 +132,7 @@ def test_long_crt_columns_and_exit_reason():
 
 def test_short_crt_columns_and_exit_reason():
     df = _make_short_sample()
-    sig = nitro_crt.generate_signals(df, params={"entry_mode": "signal_close"})
+    sig = nitro_crt.generate_signals(df)
     assert not sig.empty
     assert (sig["direction"] == -1).all()
     assert sig.iloc[0]["exit_reason"] == "target"

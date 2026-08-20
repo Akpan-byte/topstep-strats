@@ -614,12 +614,14 @@ def calculate_metrics(
         "brownian_motion_test": brownian_motion_variance_ratio(daily_returns),
         "bayesian_sharpe": bayesian_sharpe(daily_returns, random_state=random_state),
         "regressions": regress_equity_curve(equity),
-        "probability_of_ruin": probability_of_ruin(daily_returns, equity, n_sims=n_mc, random_state=random_state),
-        "monte_carlo": monte_carlo_simulations(
-            daily_returns, equity, n_sims=n_mc, horizon=horizon, random_state=random_state
+        "probability_of_ruin": probability_of_ruin(daily_returns, equity, n_sims=max(n_mc, 100), random_state=random_state),
+        "monte_carlo": (
+            monte_carlo_simulations(daily_returns, equity, n_sims=n_mc, horizon=horizon, random_state=random_state)
+            if n_mc > 0 else {}
         ),
-        "bootstrap": bootstrap_metrics(
-            daily_returns, equity, trades, n_boot=n_boot, random_state=random_state
+        "bootstrap": (
+            bootstrap_metrics(daily_returns, equity, trades, n_boot=n_boot, random_state=random_state)
+            if n_boot > 0 else {}
         ),
     }
 

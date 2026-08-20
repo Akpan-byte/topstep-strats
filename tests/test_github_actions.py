@@ -83,7 +83,7 @@ def test_run_chunk_build_report():
     metrics = {"psr": 0.8, "dsr": 0.7, "sharpe": 1.2, "max_drawdown": -100.0}
 
     report = run_chunk._build_report(
-        "nitro_crt", "NQ", "2024-01-01", "2024-01-31", backtest_result, metrics, {}
+        "nitro_crt", "2024-01-01", "2024-01-31", backtest_result, metrics, {}
     )
 
     assert report["strategy"] == "nitro_crt"
@@ -188,63 +188,27 @@ def test_run_local_help():
 def test_workflow_yaml_shape():
     wf_path = PROJECT_ROOT / ".github" / "workflows" / "topstep_parallel.yml"
     text = wf_path.read_text()
-    # The sweep matrix: instrument (NQ/ES; YM runs on the laptop) x 6 HTFs x
-    # 2 target modes x 2 scenarios, plus the merge + aggregate jobs.
+    assert "kasen_orb" in text
     assert "nitro_crt" in text
-    assert "run_sweep_job.py" in text
-    assert "data-v2.0" in text
+    assert text.count("- {start:") == 20
     assert "gh release download" in text
-    assert "laptop_results.tar.gz" in text
-    assert "aggregate.py" in text
-    assert "htf: [5m, 15m, 30m, 1h, 2h, 4h]" in text
-    assert "target_mode: [fixed_rr, opposite]" in text
-    assert "scenario: [first_only, reentries]" in text
     assert "actions/download-artifact@v4" in text
     assert "actions/upload-artifact@v4" in text
+    assert "aggregate.py" in text
 
 
-def test_run_sweep_job_invokes_run_chunk(tmp_path, monkeypatch):
-    """run_sweep_job.py must emit one run_chunk-format JSON per chunk."""
-    import run_sweep_job
-
-    monkeypatch.setenv("TOPSTEP_GH_ACTIONS_TEST", "1")
-    data_file = tmp_path / "NQ_1min.csv"
-    data_file.write_text("timestamp,open,high,low,close,volume\n")
-
-    monkeypatch.setattr(run_sweep_job, "CHUNKS", [("2024-01-01", "2024-01-31")])
-    out_dir = tmp_path / "out"
-
-    run_sweep_job.run_config(
-        "NQ", "1h", "opposite", "reentries", str(data_file), str(out_dir), warmup_days=7
-    )
-
-    jsons = sorted(str(p) for p in out_dir.glob("*.json"))
-    assert len(jsons) == 1
-    rec = json.loads(Path(jsons[0]).read_text())
-    assert rec["strategy"] == "nitro_crt"
-    assert rec["instrument"] == "NQ"
-    assert rec["scenario"] == "reentries"
-    assert rec["htf_timeframe"] == "1h"
-    assert rec["target_mode"] == "opposite"
-    assert "raw" in rec and "topstep" in rec
-
-
-def test_sweep_overrides_bubble_into_report(tmp_path, monkeypatch):
-    """--htf / --target-mode overrides must appear in the chunk report."""
-    run_chunk = _import_run_chunk(monkeypatch)
-    out_file = tmp_path / "result.json"
-    data_file = tmp_path / "NQ_1min.csv"
-    data_file.write_text("timestamp,open,high,low,close,volume\n")
-
-    run_chunk.main([
-        "--strategy", "nitro_crt",
-        "--start-date", "2024-01-01",
-        "--end-date", "2024-01-31",
-        "--output", str(out_file),
-        "--data-path", str(data_file),
-        "--htf", "4h",
-        "--target-mode", "opposite",
-    ])
-    report = json.loads(out_file.read_text())
-    assert report["htf_timeframe"] == "4h"
-    assert report["target_mode"] == "opposite"
+def test_paper1_sweep_yaml_shape():
+    wf_path = PROJECT_ROOT / ".github" / "workflows" / "paper1_sweep.yml"
+    text = wf_path.read_text()
+    # 20 matrix batches covering IDs 0-100.
+    assert text.count("- {start:") == 20
+    assert "gh release download" in text
+    assert "ES_1min.parquet" in text
+    assert "NQ_1min.parquet" in text
+    assert "YM_1min.parquet" in text
+    assert "--strategy-id-start" in text
+    assert "--strategy-id-end" in text
+    assert "--no-aggregate" in text
+    assert "scripts/aggregate_paper1.py" in text
+    assert "actions/download-artifact@v4" in text
+    assert "actions/upload-artifact@v4" in text
