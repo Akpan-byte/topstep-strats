@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "paper1_common",
+    "ict_silver_bullet",
+    "casper_inverted_fvg",
+    "velez_20_200_elephant_bar",
+    "rosato_sd_absorption",
+    "carter_ttm_squeeze",
+    "raschke_holy_grail",
+    "wade_pats_second_entry",
+]
+resolver = "2"

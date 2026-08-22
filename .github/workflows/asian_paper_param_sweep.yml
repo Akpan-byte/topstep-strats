@@ -1,0 +1,169 @@
+# CHANGE_SUMMARY
+# 2026-08-22  kilo
+#   - Created .github/workflows/asian_paper_param_sweep.yml to run the Asian-paper
+#     108-strategy parameter sweep on GitHub Actions.
+#   - Uses a 20-worker ubuntu-latest matrix; each worker runs a slice of the
+#     108 strategy IDs and sweeps tp_atr x sl_atr x mode x account_size.
+#   - Builds the Rust engine with maturin, downloads data-v2.0 release assets,
+#     and aggregates per-worker CSVs into a single result file.
+# WHY: The user requested an automated CI parameter sweep for the Asian paper
+#      strategies with parallel workers and a final aggregate CSV.
+
+name: Asian Paper Parameter Sweep
+
+on:
+  workflow_dispatch:
+
+env:
+  TOTAL_IDS: "108"
+  N_WORKERS: "20"
+
+jobs:
+  sweep:
+    name: Sweep worker ${{ matrix.worker_id }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker_id:
+          - 0
+          - 1
+          - 2
+          - 3
+          - 4
+          - 5
+          - 6
+          - 7
+          - 8
+          - 9
+          - 10
+          - 11
+          - 12
+          - 13
+          - 14
+          - 15
+          - 16
+          - 17
+          - 18
+          - 19
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            engine_rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('engine_rust/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt maturin
+
+      - name: Download market data from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p data
+          gh release download data-v2.0 --repo ${{ github.repository }} --pattern "*.parquet" --dir data/
+          ls -lh data/
+
+      - name: Build and install Rust engine
+        run: |
+          cd engine_rust
+          maturin develop --release
+
+      - name: Compute strategy ID slice for this worker
+        id: slice
+        run: |
+          python3 - <<'PY'
+          import os
+          total = int(os.environ["TOTAL_IDS"])
+          n = int(os.environ["N_WORKERS"])
+          wid = int(os.environ["WORKER_ID"])
+          base, rem = divmod(total, n)
+          start = wid * base + min(wid, rem)
+          end = start + base + (1 if wid < rem else 0)
+          print(f"id_start={start}")
+          print(f"id_end={end}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"id_start={start}\n")
+              f.write(f"id_end={end}\n")
+          PY
+        env:
+          WORKER_ID: ${{ matrix.worker_id }}
+
+      - name: Run Asian-paper grid sweep
+        run: |
+          python engine_rust/scripts/asian_paper_grid_runner.py \
+            --id-start ${{ steps.slice.outputs.id_start }} \
+            --id-end ${{ steps.slice.outputs.id_end }} \
+            --workers 4 \
+            --output-dir asian_paper_grid_results \
+            --data-dir data \
+            --topstep
+
+      - name: Upload worker CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: asian-paper-grid-worker-${{ matrix.worker_id }}
+          path: asian_paper_grid_results/*.csv
+          if-no-files-found: error
+
+  aggregate:
+    name: Aggregate results
+    needs: sweep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download all worker artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: asian_paper_grid_results
+          pattern: asian-paper-grid-worker-*
+          merge-multiple: true
+
+      - name: Aggregate CSVs
+        run: |
+          python3 - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+
+          files = sorted(Path("asian_paper_grid_results").glob("*.csv"))
+          if not files:
+              raise RuntimeError("No worker CSV files found for aggregation")
+
+          dfs = [pd.read_csv(f) for f in files]
+          df = pd.concat(dfs, ignore_index=True)
+          out = Path("asian_paper_grid_all.csv")
+          df.to_csv(out, index=False)
+          print(f"Aggregated {len(files)} worker files into {len(df)} rows -> {out}")
+          PY
+
+      - name: Upload aggregate CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: asian-paper-grid-aggregate
+          path: asian_paper_grid_all.csv

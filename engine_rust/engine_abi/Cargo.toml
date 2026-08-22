@@ -1,0 +1,8 @@
+[package]
+name = "engine_abi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "engine_abi"
+crate-type = ["rlib", "cdylib"]

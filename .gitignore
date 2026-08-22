@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+*.so
 
 # Local outputs
 smoke_report/
@@ -12,6 +13,7 @@ local_results/
 results/
 final_report/
 artifacts/
+asian_paper_grid_results/
 
 # Data — too large for git; downloaded in CI or stored locally
 *.csv
@@ -23,3 +25,9 @@ artifacts/
 *.swp
 *.swo
 *~
+
+# Rust
+engine_rust/target/
+engine_rust/**/target/
+engine_rust/Cargo.lock
+engine_rust/**/Cargo.lock

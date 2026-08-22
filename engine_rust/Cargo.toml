@@ -1,0 +1,48 @@
+# CHANGE_SUMMARY
+# 2026-08-20  kilo
+#   - Converted engine_rust into a Cargo workspace.
+#   - Added engine_abi and 9 Paper-2 strategy cdylib crates as members.
+#   - Paper-1 lives in its own nested workspace under strategies/paper1/.
+# WHY: Strategy plugins share lightweight ABI types through engine_abi while the
+#      engine core keeps PyO3/Arrow/Parquet dependencies.
+
+[workspace]
+members = [
+    ".",
+    "engine_abi",
+    "strategies/paper2/paper2_indicators",
+    "strategies/paper2/paper2_liquidity_purge",
+    "strategies/paper2/paper2_structural_confluence",
+    "strategies/paper2/paper2_smt_divergence",
+    "strategies/paper2/paper2_tick_price_action_2000",
+    "strategies/paper2/paper2_vpoc_reversion",
+    "strategies/paper2/paper2_level3_footprint_absorption",
+    "strategies/paper2/paper2_atr_fair_value_scalp",
+    "strategies/paper2/paper2_vwap_zscore_orb",
+    "strategies/paper2/paper2_algorithmic_indicator_convergence",
+]
+resolver = "2"
+
+[package]
+name = "agnostic_backtest"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "agnostic_backtest"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+engine_abi = { path = "engine_abi" }
+pyo3 = { version = "0.22", features = ["extension-module"] }
+csv = "1.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4"
+chrono-tz = "0.10"
+parquet = { version = "59", features = ["arrow"] }
+arrow = "59"
+
+[dev-dependencies]
+tempfile = "3.10"
+arrow = "59"

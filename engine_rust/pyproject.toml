@@ -1,0 +1,15 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "agnostic_backtest"
+version = "0.1.0"
+description = "Language-agnostic high-performance backtest engine core"
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.maturin]
+manifest-path = "Cargo.toml"
+module-name = "agnostic_backtest._rust"
+python-source = "python"
