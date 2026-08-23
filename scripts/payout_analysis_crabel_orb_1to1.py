@@ -8,6 +8,13 @@ Topstep combine payouts.  Designed to run on a remote worker (Akpan
 laptop or GitHub Actions) so this VM does not carry the compute load.
 """
 
+# CHANGE_SUMMARY
+# 2026-08-23  kilo
+#   - Added four experimental config columns to the row emitted by _run_config:
+#     cancel_cutoff, require_setup, retracement_38_enabled, tic_volume_enabled.
+# WHY: build_config_matrix() now produces 576 variant configs; the analysis CSV
+#      must carry these flags so we can compare variant performance.
+
 from __future__ import annotations
 
 import argparse
@@ -73,6 +80,10 @@ def _run_config(cfg: Dict[str, Any], data_dir: Path) -> Dict[str, Any]:
         "breakeven_fast_min": cfg["breakeven_fast_min"],
         "substantial_profit_multiple": cfg["substantial_profit_multiple"],
         "use_orbp": cfg["use_orbp"],
+        "cancel_cutoff": cfg["cancel_cutoff"],
+        "require_setup": cfg["require_setup"],
+        "retracement_38_enabled": cfg["retracement_38_enabled"],
+        "tic_volume_enabled": cfg["tic_volume_enabled"],
         "total_trades": summary["total_trades"],
         "executed_trades": summary["executed_trades"],
         "win_rate": summary["win_rate"],
