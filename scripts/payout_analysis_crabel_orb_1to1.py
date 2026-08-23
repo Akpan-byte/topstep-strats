@@ -116,6 +116,8 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1, help="Parallel workers")
     parser.add_argument("--instrument", type=str, default=None, help="Run a single instrument (NQ/ES/YM)")
     parser.add_argument("--smoke", action="store_true", help="Run only the first 3 configs")
+    parser.add_argument("--mod", type=int, default=None, help="Shard modulus")
+    parser.add_argument("--remainder", type=int, default=None, help="Shard remainder")
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -123,6 +125,8 @@ def main() -> None:
     configs = build_config_matrix()
     if args.instrument:
         configs = [c for c in configs if c["instrument"] == args.instrument.upper()]
+    if args.mod is not None and args.remainder is not None:
+        configs = [c for i, c in enumerate(configs) if i % args.mod == args.remainder]
     if args.smoke:
         configs = configs[:3]
 

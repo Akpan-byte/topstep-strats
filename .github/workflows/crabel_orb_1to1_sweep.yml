@@ -2,9 +2,9 @@
 # 2026-08-23  kilo
 #   - Created crabel_orb_1to1_sweep.yml to run the 192-config 1:1 Crabel ORB
 #     payout sweep on GitHub Actions runners.
-#   - Splits work by instrument (NQ/ES/YM) so each job handles ~64 configs.
-#   - Downloads data-v2.0 parquet assets via gh release download and caches
-#     pip dependencies.
+#   - Splits work across 20 parallel batch jobs so every worker is used.
+#   - Each job downloads the data-v2.0 parquet release and runs a shard of the
+#     full config matrix (index % 20 == batch).
 #   - Uploads CSV/JSON artifacts; a final aggregate job combines them into one
 #     ranked summary.
 # WHY: Keeps all heavy backtest compute off the local VM while producing the
@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        instrument: [NQ, ES, YM]
+        batch: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
 
     steps:
       - name: Checkout repository
@@ -52,19 +52,20 @@ jobs:
           test -f /tmp/market_data/NQ_1min.parquet
           test -f /tmp/market_data/YM_1min.parquet
 
-      - name: Run Crabel ORB 1:1 payout sweep for ${{ matrix.instrument }}
+      - name: Run Crabel ORB 1:1 payout sweep batch ${{ matrix.batch }}
         run: |
           mkdir -p gh_results/crabel_orb_1to1
           python scripts/payout_analysis_crabel_orb_1to1.py \
-            --instrument ${{ matrix.instrument }} \
             --data-dir /tmp/market_data \
             --out-dir gh_results/crabel_orb_1to1 \
+            --mod 20 \
+            --remainder ${{ matrix.batch }} \
             --workers 4
 
-      - name: Upload instrument results
+      - name: Upload batch results
         uses: actions/upload-artifact@v4
         with:
-          name: crabel-orb-1to1-${{ matrix.instrument }}
+          name: crabel-orb-1to1-batch-${{ matrix.batch }}
           path: gh_results/crabel_orb_1to1/*
           if-no-files-found: error
 
@@ -86,11 +87,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Download all instrument artifacts
+      - name: Download all batch artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: crabel-orb-1to1-*
+          pattern: crabel-orb-1to1-batch-*
           merge-multiple: true
 
       - name: Aggregate and rank results
@@ -99,6 +100,8 @@ jobs:
           python - <<'PY'
           import glob, json, pandas as pd
           csvs = sorted(glob.glob('artifacts/*.csv'))
+          if not csvs:
+              raise RuntimeError('No CSV artifacts found')
           df = pd.concat([pd.read_csv(c) for c in csvs], ignore_index=True)
           df = df.sort_values('net_pnl_points', ascending=False)
           df.to_csv('final_report/crabel_orb_1to1_aggregated.csv', index=False)
