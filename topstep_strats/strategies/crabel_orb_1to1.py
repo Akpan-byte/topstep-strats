@@ -61,10 +61,12 @@ class Crabel1to1Config:
     allow_hook: bool = True
     allow_spring_upthrust: bool = True
 
-    retracement_38_enabled: bool = True
+    require_setup: bool = True
+
+    retracement_38_enabled: bool = False
     retracement_attempt_cap: int = 2
 
-    tic_volume_enabled: bool = False  # disabled by default; requires tic_volume column
+    tic_volume_enabled: bool = False  # uses 1-min volume as proxy for tic volume
     tic_volume_lookback: int = 10
     tic_volume_retrace_min_min: int = 25
     tic_volume_retrace_max_min: int = 35
@@ -185,10 +187,18 @@ def _calculate_daily_features(daily_df: pd.DataFrame, cfg: Crabel1to1Config) -> 
 
 
 def _calculate_5min_features(df_5m: pd.DataFrame, cfg: Crabel1to1Config) -> pd.DataFrame:
-    """Calculate 5-minute Early Entry features."""
+    """Calculate 5-minute Early Entry and volume-exhaustion features."""
     df = df_5m.copy()
     df["range_5m"] = df["high"] - df["low"]
     df["avg_first5_range"] = df["range_5m"].rolling(window=cfg.ee_firstbar_lookback).mean().shift(1)
+
+    # Volume exhaustion proxy: highest 5-min volume of the prior N bars.
+    if "volume" in df.columns:
+        df["volume_roll_max"] = df["volume"].rolling(window=cfg.tic_volume_lookback).max().shift(1)
+        df["volume_spike"] = df["volume"] > df["volume_roll_max"]
+    else:
+        df["volume_roll_max"] = np.nan
+        df["volume_spike"] = False
 
     open_ = df["open"]
     high = df["high"]
@@ -283,7 +293,8 @@ def default_params() -> Dict[str, Any]:
         "use_orbp": True,
         "allow_hook": True,
         "allow_spring_upthrust": True,
-        "retracement_38_enabled": True,
+        "require_setup": True,
+        "retracement_38_enabled": False,
         "retracement_attempt_cap": 2,
         "tic_volume_enabled": False,
         "tic_volume_lookback": 10,
@@ -305,15 +316,26 @@ def _session_close_from_end(end: str) -> str:
 
 
 def build_config_matrix() -> List[Dict[str, Any]]:
-    """Build a focused matrix for the 1:1 Crabel ORB."""
+    """Build an extended matrix for the 1:1 Crabel ORB.
+
+    Tests the four requested variants:
+      - 3/8ths retracement entry (retracement_38_enabled)
+      - tic-volume exhaustion entry (tic_volume_enabled)
+      - no daily setup filter (require_setup=False)
+      - extended cancel cutoffs (12:00, 14:00)
+    """
     rows: List[Dict[str, Any]] = []
-    sessions = ["RTH"]  # Focus on RTH for initial test
+    sessions = ["RTH"]
     instruments = ["NQ", "ES", "YM"]
-    lookbacks = [5, 10, 15, 20]
-    stretch_mults = [1.0, 2.0]
+    lookbacks = [10, 15]
+    stretch_mults = [2.0]
     trend_smas = [10, 20]
     be_fasts = [5, 10]
     profit_mults = [1.5, 2.0]
+    cutoffs = ["10:30", "12:00", "14:00"]
+    require_setups = [True, False]
+    retracements = [True, False]
+    tic_volumes = [True, False]
 
     idx = 1
     for session in sessions:
@@ -323,31 +345,38 @@ def build_config_matrix() -> List[Dict[str, Any]]:
                     for tsma in trend_smas:
                         for befast in be_fasts:
                             for pmult in profit_mults:
-                                sess = SESSIONS[session]
-                                cfg = default_params()
-                                cfg.update({
-                                    "strategy_id": f"CRB1_{idx:04d}",
-                                    "instrument": instrument,
-                                    "session": session,
-                                    "session_start": sess["start"],
-                                    "session_end": sess["end"],
-                                    "session_close_exit": _session_close_from_end(sess["end"]),
-                                    "tz": sess["tz"],
-                                    "stretch_lookback": lookback,
-                                    "stretch_multiple": smult,
-                                    "running_trend_sma": tsma,
-                                    "breakeven_fast_min": befast,
-                                    "substantial_profit_multiple": pmult,
-                                })
-                                # Set point_value per instrument
-                                if instrument == "ES":
-                                    cfg["point_value"] = 50.0
-                                elif instrument == "YM":
-                                    cfg["point_value"] = 5.0
-                                else:
-                                    cfg["point_value"] = 20.0
-                                rows.append(cfg)
-                                idx += 1
+                                for cutoff in cutoffs:
+                                    for req_setup in require_setups:
+                                        for retr in retracements:
+                                            for tv in tic_volumes:
+                                                sess = SESSIONS[session]
+                                                cfg = default_params()
+                                                cfg.update({
+                                                    "strategy_id": f"CRB1_{idx:04d}",
+                                                    "instrument": instrument,
+                                                    "session": session,
+                                                    "session_start": sess["start"],
+                                                    "session_end": sess["end"],
+                                                    "session_close_exit": _session_close_from_end(sess["end"]),
+                                                    "tz": sess["tz"],
+                                                    "stretch_lookback": lookback,
+                                                    "stretch_multiple": smult,
+                                                    "running_trend_sma": tsma,
+                                                    "breakeven_fast_min": befast,
+                                                    "substantial_profit_multiple": pmult,
+                                                    "cancel_cutoff": cutoff,
+                                                    "require_setup": req_setup,
+                                                    "retracement_38_enabled": retr,
+                                                    "tic_volume_enabled": tv,
+                                                })
+                                                if instrument == "ES":
+                                                    cfg["point_value"] = 50.0
+                                                elif instrument == "YM":
+                                                    cfg["point_value"] = 5.0
+                                                else:
+                                                    cfg["point_value"] = 20.0
+                                                rows.append(cfg)
+                                                idx += 1
     return rows
 
 
@@ -356,6 +385,14 @@ def get_strategy_config(strategy_id: str) -> Dict[str, Any]:
         if cfg["strategy_id"] == strategy_id:
             return cfg
     raise ValueError(f"Unknown strategy ID: {strategy_id}")
+
+
+def _contracts_at_time(current_time: time, full_end_t: time, half_end_t: time) -> float:
+    if current_time <= full_end_t:
+        return 1.0
+    if current_time <= half_end_t:
+        return 0.5
+    return 0.25
 
 
 def generate_signals(df_1m: pd.DataFrame, params: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
@@ -388,7 +425,6 @@ def generate_signals(df_1m: pd.DataFrame, params: Optional[Dict[str, Any]] = Non
     df_1m_local.index = df_1m_local.index.tz_convert(tz)
 
     trades: List[Dict[str, Any]] = []
-    trade_id = 1
 
     daily_dates = set(daily_features.index.normalize().date)
     for current_date, intraday_bars in df_1m_local.groupby(df_1m_local.index.date):
@@ -411,10 +447,9 @@ def generate_signals(df_1m: pd.DataFrame, params: Optional[Dict[str, Any]] = Non
             daily_row["setup_Spring"] or
             daily_row["setup_Upthrust"]
         )
-        if not setup_active:
+        if cfg.require_setup and not setup_active:
             continue
 
-        # Attach session open to daily row for gap logic
         session_bars = intraday_bars.between_time(session_start_t, session_end_t)
         if session_bars.empty:
             continue
@@ -435,6 +470,19 @@ def generate_signals(df_1m: pd.DataFrame, params: Optional[Dict[str, Any]] = Non
         stop_price = 0.0
         contracts = 1.0
         breakeven_moved = False
+        bracket_expired = False
+        orbp_nullified = False
+
+        # 3/8ths and volume-exhaustion state
+        ee_long = False
+        ee_short = False
+        ee_checked = False
+        session_high = session_open_price
+        session_low = session_open_price
+        retracement_attempts = 0
+        retracement_placed = False
+        volume_pending: Optional[Dict[str, Any]] = None
+        last_5min_checked: Optional[pd.Timestamp] = None
 
         for bar_time, bar in session_bars.iterrows():
             current_time = bar_time.time()
@@ -443,57 +491,145 @@ def generate_signals(df_1m: pd.DataFrame, params: Optional[Dict[str, Any]] = Non
             close = bar["close"]
             open_p = bar["open"]
 
-            if not in_position:
-                if current_time > cancel_cutoff_t:
-                    break
+            session_high = max(session_high, high)
+            session_low = min(session_low, low)
+            bracket_expired = current_time > cancel_cutoff_t
 
-                # Position sizing decay
-                if current_time <= full_end_t:
-                    contracts = 1.0
-                elif current_time <= half_end_t:
-                    contracts = 0.5
-                else:
-                    contracts = 0.25
+            # Early Entry detection on the first 5-minute bar of the session.
+            if not ee_checked:
+                bar_5m = bar_time.floor("5min")
+                if bar_5m in df_5m_features.index:
+                    feat = df_5m_features.loc[bar_5m]
+                    if bool(feat["EE_Long"]):
+                        ee_long = True
+                    elif bool(feat["EE_Short"]):
+                        ee_short = True
+                    ee_checked = True
 
-                long_triggered = high >= buy_stop
-                short_triggered = low <= sell_stop
+            if not in_position and not orbp_nullified:
+                contracts = _contracts_at_time(current_time, full_end_t, half_end_t)
 
-                if long_triggered and short_triggered:
-                    break
+                # --- OCO bracket entry (until cutoff) ---
+                if not bracket_expired:
+                    long_triggered = high >= buy_stop
+                    short_triggered = low <= sell_stop
 
-                if bias == "long":
-                    if short_triggered:
-                        break  # ORBP nullified
-                    if long_triggered:
-                        in_position = True
-                        position_dir = 1
-                        entry_price = max(buy_stop, open_p) + cfg.slippage_per_unit
-                        entry_time = bar_time
-                        stop_price = sell_stop
-                elif bias == "short":
-                    if long_triggered:
-                        break  # ORBP nullified
-                    if short_triggered:
-                        in_position = True
-                        position_dir = -1
-                        entry_price = min(sell_stop, open_p) - cfg.slippage_per_unit
-                        entry_time = bar_time
-                        stop_price = buy_stop
-                else:
-                    # Symmetric ORB
-                    if long_triggered:
-                        in_position = True
-                        position_dir = 1
-                        entry_price = max(buy_stop, open_p) + cfg.slippage_per_unit
-                        entry_time = bar_time
-                        stop_price = sell_stop
-                    elif short_triggered:
-                        in_position = True
-                        position_dir = -1
-                        entry_price = min(sell_stop, open_p) - cfg.slippage_per_unit
-                        entry_time = bar_time
-                        stop_price = buy_stop
-            else:
+                    if long_triggered and short_triggered:
+                        orbp_nullified = True
+                        continue
+
+                    if bias == "long":
+                        if short_triggered:
+                            orbp_nullified = True
+                            continue
+                        if long_triggered:
+                            in_position = True
+                            position_dir = 1
+                            entry_price = max(buy_stop, open_p) + cfg.slippage_per_unit
+                            entry_time = bar_time
+                            stop_price = sell_stop
+                    elif bias == "short":
+                        if long_triggered:
+                            orbp_nullified = True
+                            continue
+                        if short_triggered:
+                            in_position = True
+                            position_dir = -1
+                            entry_price = min(sell_stop, open_p) - cfg.slippage_per_unit
+                            entry_time = bar_time
+                            stop_price = buy_stop
+                    else:
+                        if long_triggered:
+                            in_position = True
+                            position_dir = 1
+                            entry_price = max(buy_stop, open_p) + cfg.slippage_per_unit
+                            entry_time = bar_time
+                            stop_price = sell_stop
+                        elif short_triggered:
+                            in_position = True
+                            position_dir = -1
+                            entry_price = min(sell_stop, open_p) - cfg.slippage_per_unit
+                            entry_time = bar_time
+                            stop_price = buy_stop
+
+                # --- 3/8ths retracement entry ---
+                if (
+                    not in_position
+                    and cfg.retracement_38_enabled
+                    and not retracement_placed
+                    and retracement_attempts < cfg.retracement_attempt_cap
+                    and (ee_long or ee_short)
+                ):
+                    direction = 1 if ee_long else -1
+                    range_ = session_high - session_low
+                    if range_ > 0:
+                        if direction == 1:
+                            zone_top = session_high - 0.375 * range_
+                            zone_bottom = session_high - 0.500 * range_
+                            if low <= zone_top and high >= zone_bottom:
+                                in_position = True
+                                position_dir = 1
+                                entry_price = close
+                                entry_time = bar_time
+                                stop_price = session_high - 0.625 * range_
+                                retracement_placed = True
+                                retracement_attempts += 1
+                        else:
+                            zone_bottom = session_low + 0.375 * range_
+                            zone_top = session_low + 0.500 * range_
+                            if high >= zone_bottom and low <= zone_top:
+                                in_position = True
+                                position_dir = -1
+                                entry_price = close
+                                entry_time = bar_time
+                                stop_price = session_low + 0.625 * range_
+                                retracement_placed = True
+                                retracement_attempts += 1
+
+                # --- Tic-volume exhaustion entry (volume used as proxy) ---
+                if not in_position and cfg.tic_volume_enabled and (ee_long or ee_short):
+                    bar_5m = bar_time.floor("5min")
+                    if bar_5m != last_5min_checked and bar_5m in df_5m_features.index:
+                        last_5min_checked = bar_5m
+                        feat = df_5m_features.loc[bar_5m]
+                        if bool(feat.get("volume_spike", False)):
+                            direction = 1 if ee_long else -1
+                            # Spike bar must be counter-trend: close against the EE direction.
+                            spike_ok = (direction == 1 and close < open_p) or (direction == -1 and close > open_p)
+                            if spike_ok:
+                                confirm_min = pd.Timedelta(minutes=cfg.tic_volume_confirm_min)
+                                confirm_max = pd.Timedelta(minutes=cfg.tic_volume_confirm_max)
+                                volume_pending = {
+                                    "direction": direction,
+                                    "trigger_high": high,
+                                    "trigger_low": low,
+                                    "start": bar_time + confirm_min,
+                                    "end": bar_time + confirm_max,
+                                }
+
+                    if volume_pending is not None:
+                        if bar_time < volume_pending["start"]:
+                            pass
+                        elif bar_time > volume_pending["end"]:
+                            volume_pending = None
+                        else:
+                            direction = volume_pending["direction"]
+                            if direction == 1 and high >= volume_pending["trigger_high"]:
+                                in_position = True
+                                position_dir = 1
+                                entry_price = max(volume_pending["trigger_high"], open_p)
+                                entry_time = bar_time
+                                stop_price = session_low
+                                volume_pending = None
+                            elif direction == -1 and low <= volume_pending["trigger_low"]:
+                                in_position = True
+                                position_dir = -1
+                                entry_price = min(volume_pending["trigger_low"], open_p)
+                                entry_time = bar_time
+                                stop_price = session_high
+                                volume_pending = None
+
+            if in_position:
                 # Stop loss check
                 if position_dir == 1 and low <= stop_price:
                     exit_price = min(stop_price, open_p) - cfg.slippage_per_unit
@@ -511,7 +647,6 @@ def generate_signals(df_1m: pd.DataFrame, params: Optional[Dict[str, Any]] = Non
                         "contracts": contracts,
                         "instrument": cfg.instrument,
                     })
-                    trade_id += 1
                     in_position = False
                     break
 
@@ -531,7 +666,6 @@ def generate_signals(df_1m: pd.DataFrame, params: Optional[Dict[str, Any]] = Non
                         "contracts": contracts,
                         "instrument": cfg.instrument,
                     })
-                    trade_id += 1
                     in_position = False
                     break
 
@@ -562,7 +696,6 @@ def generate_signals(df_1m: pd.DataFrame, params: Optional[Dict[str, Any]] = Non
                     exit_price = close
                     pnl = (exit_price - entry_price) * position_dir
                     reason = "MOC_DAYTRADE"
-                    # Swing conversion logic: if substantial profit, mark as swing
                     if pnl >= cfg.substantial_profit_multiple * initial_risk:
                         reason = "MOC_SUBSTANTIAL_PROFIT"
                     trades.append({
@@ -578,7 +711,6 @@ def generate_signals(df_1m: pd.DataFrame, params: Optional[Dict[str, Any]] = Non
                         "contracts": contracts,
                         "instrument": cfg.instrument,
                     })
-                    trade_id += 1
                     in_position = False
                     break
 
