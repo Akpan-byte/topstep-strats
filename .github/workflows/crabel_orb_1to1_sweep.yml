@@ -1,0 +1,115 @@
+# CHANGE_SUMMARY
+# 2026-08-23  kilo
+#   - Created crabel_orb_1to1_sweep.yml to run the 192-config 1:1 Crabel ORB
+#     payout sweep on GitHub Actions runners.
+#   - Splits work by instrument (NQ/ES/YM) so each job handles ~64 configs.
+#   - Downloads data-v2.0 parquet assets via gh release download and caches
+#     pip dependencies.
+#   - Uploads CSV/JSON artifacts; a final aggregate job combines them into one
+#     ranked summary.
+# WHY: Keeps all heavy backtest compute off the local VM while producing the
+#      full quant + Topstep payout metrics the user requested.
+
+name: Crabel ORB 1:1 Sweep
+
+on:
+  push:
+    branches: [crabel-orb-1to1, main]
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        instrument: [NQ, ES, YM]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Fetch ES/NQ/YM market data (data-v2.0 parquet)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/market_data
+          gh release download data-v2.0 --repo ${{ github.repository }} \
+            --pattern 'ES_1min.parquet' --pattern 'NQ_1min.parquet' --pattern 'YM_1min.parquet' \
+            --dir /tmp/market_data/
+          test -f /tmp/market_data/ES_1min.parquet
+          test -f /tmp/market_data/NQ_1min.parquet
+          test -f /tmp/market_data/YM_1min.parquet
+
+      - name: Run Crabel ORB 1:1 payout sweep for ${{ matrix.instrument }}
+        run: |
+          mkdir -p gh_results/crabel_orb_1to1
+          python scripts/payout_analysis_crabel_orb_1to1.py \
+            --instrument ${{ matrix.instrument }} \
+            --data-dir /tmp/market_data \
+            --out-dir gh_results/crabel_orb_1to1 \
+            --workers 4
+
+      - name: Upload instrument results
+        uses: actions/upload-artifact@v4
+        with:
+          name: crabel-orb-1to1-${{ matrix.instrument }}
+          path: gh_results/crabel_orb_1to1/*
+          if-no-files-found: error
+
+  aggregate:
+    needs: sweep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download all instrument artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: crabel-orb-1to1-*
+          merge-multiple: true
+
+      - name: Aggregate and rank results
+        run: |
+          mkdir -p final_report
+          python - <<'PY'
+          import glob, json, pandas as pd
+          csvs = sorted(glob.glob('artifacts/*.csv'))
+          df = pd.concat([pd.read_csv(c) for c in csvs], ignore_index=True)
+          df = df.sort_values('net_pnl_points', ascending=False)
+          df.to_csv('final_report/crabel_orb_1to1_aggregated.csv', index=False)
+          with open('final_report/crabel_orb_1to1_top10.json','w') as f:
+              json.dump(df.head(10).to_dict('records'), f, indent=2, default=str)
+          print(f'Aggregated {len(df)} configs')
+          PY
+
+      - name: Upload final report
+        uses: actions/upload-artifact@v4
+        with:
+          name: crabel-orb-1to1-final-report
+          path: final_report/
+          if-no-files-found: error
