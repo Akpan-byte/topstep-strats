@@ -92,14 +92,13 @@ jobs:
         with:
           path: artifacts
           pattern: crabel-orb-1to1-batch-*
-          merge-multiple: true
 
       - name: Aggregate and rank results
         run: |
           mkdir -p final_report
           python - <<'PY'
           import glob, json, pandas as pd
-          csvs = sorted(glob.glob('artifacts/*.csv'))
+          csvs = sorted(glob.glob('artifacts/crabel-orb-1to1-batch-*/*.csv'))
           if not csvs:
               raise RuntimeError('No CSV artifacts found')
           df = pd.concat([pd.read_csv(c) for c in csvs], ignore_index=True)
