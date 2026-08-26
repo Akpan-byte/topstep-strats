@@ -1,0 +1,642 @@
+#!/usr/bin/env python3
+"""
+Standard-account robustness optimization + eval contract-size sweep.
+
+For standard accounts (consistency_rule=False):
+  1. Robustness objective: select strategies that maximize bootstrap weekly payout.
+     - First filter top 20% by raw weekly payout.
+     - Run 2,000 bootstrap draws on survivors to rank by bootstrap mean.
+     - Run full 20,000 MC + 20,000 bootstrap on the final selected stack.
+  2. Eval contract sweep: for contract sizes 1-5, find the fastest eval-pass config.
+     - For each contract size, re-score all strategies raw.
+     - Pick best London + best NY by median eval pass days (pass rate >= 50%).
+     - Run full 20,000 MC + 20,000 bootstrap on each selected stack.
+"""
+
+# CHANGE_SUMMARY
+# 2026-08-26  kilo
+#   - Added robustness objective: maximize bootstrap weekly payout on standard accounts.
+#   - Added eval contract-size sweep (1-5 contracts) for fastest eval pass days.
+#   - Uses reduced bootstrap draws (2,000) for candidate ranking, then full 20k/20k on finals.
+# 2026-08-26  coder
+#   - Made script GitHub-Actions friendly: repo-relative paths, TOPSTEP_DATA_DIR env var.
+#   - Added CLI args --account, --objective, and --out for matrix parallelization.
+# WHY: High raw-payout strategies can be fragile under resampling; bootstrap-aware
+#      selection produces more reliable configs. Eval-pass speed varies with sizing.
+#      Repo-relative paths and CLI filtering let the sweep run in CI matrices.
+
+import argparse
+import os
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+import numpy as np
+import numba as nb
+import pandas as pd
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_ENGINE_RUST_ROOT = _PROJECT_ROOT / "engine_rust"
+
+sys.path.insert(0, str(_PROJECT_ROOT))
+sys.path.insert(0, str(_ENGINE_RUST_ROOT / "python"))
+
+from stack_portfolio import (
+    _init_worker,
+    build_strategy_key,
+    generate_trades_for_row,
+)
+from topstep_payout import (
+    TOPSTEP_SPECS,
+    _net_pnl,
+    _resolve_account_spec,
+    _to_est_day,
+)
+
+DATA_DIR = os.environ.get("TOPSTEP_DATA_DIR", str(_PROJECT_ROOT / "data"))
+RESULTS_CSV = (
+    _PROJECT_ROOT / "gh_results" / "rust_sweep_v4" / "payout_analysis_comprehensive.csv"
+)
+OUT_CSV = _PROJECT_ROOT / "standard_robustness_contract_sweep_report.csv"
+START_DATE = "2016-06-01"
+END_DATE = "2026-05-29"
+N_MC_FULL = 20000
+N_BOOT_FULL = 20000
+N_BOOT_RANK = 2000
+RANDOM_SEED = 42
+ROBUST_TOP_FRAC = 0.20
+
+ALL_ACCOUNT_SPECS = ["50k_standard", "150k_standard"]
+EVAL_CONTRACT_SIZES = [1, 2, 3, 4, 5]
+OBJECTIVE_CHOICES = ["robust"] + [f"eval_{c}" for c in EVAL_CONTRACT_SIZES] + ["all"]
+
+
+def get_spec_dict(spec_name: str) -> dict:
+    spec = TOPSTEP_SPECS[spec_name].copy()
+    spec["consistency_rule"] = False
+    return spec
+
+
+# ---------------------------------------------------------------------------
+# Detailed simulator
+# ---------------------------------------------------------------------------
+def simulate_topstep_payouts_detailed(
+    trades_df: pd.DataFrame,
+    account_spec: Any,
+    contracts: int = 1,
+) -> Dict[str, Any]:
+    if trades_df is None or trades_df.empty:
+        raise ValueError("trades_df must not be empty")
+
+    spec = _resolve_account_spec(account_spec)
+    profit_target = float(spec["profit_target"])
+    daily_dd = float(spec["daily_dd"])
+    trailing_dd = float(spec["trailing_dd"])
+    payout_cap = float(spec["payout_cap"])
+    min_winning_days = int(spec["min_winning_days"])
+    consistency_rule = bool(spec["consistency_rule"])
+    payout_pct = float(spec["payout_pct_of_balance"])
+    initial_capital = float(spec["initial_capital"])
+
+    df = trades_df.copy()
+    for col in ("entry_time", "exit_time"):
+        df[col] = pd.to_datetime(df[col])
+    df = df.sort_values("exit_time").reset_index(drop=True)
+    df["net_pnl"] = _net_pnl(df, contracts)
+    df["day"] = _to_est_day(df["exit_time"])
+
+    cash = initial_capital
+    high_water = initial_capital
+    daily_start = initial_capital
+    daily_pnl = 0.0
+    total_pnl_combine = 0.0
+    winning_days_current = 0
+    day_pnl_current: Dict[Any, float] = {}
+
+    resets = 0
+    failed_combines = 0
+    payouts_count = 0
+    daily_limit_hits = 0
+    consistency_violations_total = 0
+    winning_days_total = 0
+    total_payouts_dollars = 0.0
+
+    trades_executed = 0
+    winning_trades = 0
+    total_trade_pnl = 0.0
+    max_drawdown_pct = 0.0
+
+    trading_days: set = set()
+    daily_equity: Dict[Any, float] = {}
+    combines: List[Dict[str, Any]] = []
+    current_combine = {
+        "start_day": None,
+        "trading_days": set(),
+        "daily_limit_hits": 0,
+        "payout": False,
+        "days_to_payout": None,
+    }
+
+    prev_day = None
+
+    def _reset_account():
+        nonlocal cash, high_water, daily_start, daily_pnl, total_pnl_combine
+        nonlocal winning_days_current, day_pnl_current
+        cash = initial_capital
+        high_water = initial_capital
+        daily_start = initial_capital
+        daily_pnl = 0.0
+        total_pnl_combine = 0.0
+        winning_days_current = 0
+        day_pnl_current = {}
+
+    def _consistency_violated():
+        if not consistency_rule or total_pnl_combine <= 0:
+            return False
+        threshold = 0.4 * total_pnl_combine
+        return any(dpnl > threshold for dpnl in day_pnl_current.values())
+
+    def _finalize_day(day):
+        nonlocal cash, high_water, daily_start, daily_pnl, total_pnl_combine
+        nonlocal winning_days_current, winning_days_total
+        nonlocal consistency_violations_total
+        nonlocal total_payouts_dollars, payouts_count, resets
+        nonlocal current_combine
+
+        if daily_pnl > 0:
+            winning_days_current += 1
+            winning_days_total += 1
+
+        day_pnl_current[day] = daily_pnl
+
+        if (
+            cash >= initial_capital + profit_target
+            and winning_days_current >= min_winning_days
+            and not _consistency_violated()
+        ):
+            withdrawal = min(cash * payout_pct, payout_cap)
+            total_payouts_dollars += withdrawal
+            payouts_count += 1
+            resets += 1
+            current_combine["payout"] = True
+            current_combine["days_to_payout"] = len(current_combine["trading_days"])
+            combines.append(current_combine)
+            _reset_account()
+            current_combine = {
+                "start_day": None,
+                "trading_days": set(),
+                "daily_limit_hits": 0,
+                "payout": False,
+                "days_to_payout": None,
+            }
+        elif (
+            consistency_rule
+            and cash >= initial_capital + profit_target
+            and winning_days_current >= min_winning_days
+            and _consistency_violated()
+        ):
+            consistency_violations_total += 1
+
+        daily_equity[day] = cash
+
+    for row in df.itertuples(index=False):
+        day = row.day
+        if day != prev_day:
+            if prev_day is not None:
+                _finalize_day(prev_day)
+            daily_start = cash
+            daily_pnl = 0.0
+            prev_day = day
+            if current_combine["start_day"] is None:
+                current_combine["start_day"] = day
+
+        current_combine["trading_days"].add(day)
+        trading_days.add(day)
+        trade_net = float(row.net_pnl)
+
+        if cash + trade_net < daily_start - daily_dd:
+            daily_limit_hits += 1
+            current_combine["daily_limit_hits"] += 1
+            continue
+
+        cash += trade_net
+        daily_pnl += trade_net
+        total_pnl_combine += trade_net
+        total_trade_pnl += trade_net
+        trades_executed += 1
+
+        if trade_net > 0:
+            winning_trades += 1
+
+        if cash > high_water:
+            high_water = cash
+
+        dd_pct = (high_water - cash) / high_water if high_water > 0 else 0.0
+        if dd_pct > max_drawdown_pct:
+            max_drawdown_pct = dd_pct
+
+        if cash < high_water - trailing_dd:
+            resets += 1
+            failed_combines += 1
+            current_combine["payout"] = False
+            combines.append(current_combine)
+            _reset_account()
+            current_combine = {
+                "start_day": None,
+                "trading_days": set(),
+                "daily_limit_hits": 0,
+                "payout": False,
+                "days_to_payout": None,
+            }
+
+    if prev_day is not None:
+        _finalize_day(prev_day)
+
+    if current_combine["start_day"] is not None and not current_combine["payout"]:
+        combines.append(current_combine)
+
+    trading_days_count = len(trading_days)
+
+    paid_combines = [c for c in combines if c["payout"]]
+    eval_pass_days = float(np.median([c["days_to_payout"] for c in paid_combines])) if paid_combines else np.nan
+    pass_rate = len(paid_combines) / len(combines) if combines else 0.0
+
+    return {
+        "avg_payout_per_week": total_payouts_dollars / (trading_days_count / 5.0) if trading_days_count else 0.0,
+        "total_payouts_dollars": total_payouts_dollars,
+        "payouts_count": payouts_count,
+        "resets": resets,
+        "failed_combines": failed_combines,
+        "daily_limit_hits": daily_limit_hits,
+        "consistency_violations": consistency_violations_total,
+        "win_rate": (winning_trades / trades_executed * 100.0) if trades_executed else 0.0,
+        "max_drawdown_pct": max_drawdown_pct * 100.0,
+        "trades_executed": trades_executed,
+        "eval_pass_days": eval_pass_days,
+        "pass_rate": pass_rate * 100.0,
+        "daily_pnl": df.groupby("day")["net_pnl"].sum().sort_index(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Fast daily-level Numba simulator
+# ---------------------------------------------------------------------------
+@nb.njit
+def _simulate_daily_path(
+    daily_pnl: np.ndarray,
+    profit_target: float,
+    daily_dd: float,
+    trailing_dd: float,
+    payout_cap: float,
+    min_winning_days: int,
+    payout_pct: float,
+    initial_capital: float,
+) -> np.ndarray:
+    n_days = len(daily_pnl)
+    cash = initial_capital
+    high_water = initial_capital
+    total_pnl_combine = 0.0
+    winning_days_current = 0
+
+    resets = 0
+    failed_combines = 0
+    payouts_count = 0
+    total_payouts = 0.0
+
+    paid_days = np.empty(n_days, dtype=np.float64)
+    paid_count = 0
+
+    for i in range(n_days):
+        dpnl = daily_pnl[i]
+        if dpnl > 0.0:
+            winning_days_current += 1
+
+        cash += dpnl
+        total_pnl_combine += dpnl
+
+        if cash > high_water:
+            high_water = cash
+
+        if (
+            cash >= initial_capital + profit_target
+            and winning_days_current >= min_winning_days
+        ):
+            withdrawal = min(cash * payout_pct, payout_cap)
+            total_payouts += withdrawal
+            payouts_count += 1
+            resets += 1
+            paid_days[paid_count] = float(i + 1)
+            paid_count += 1
+            cash = initial_capital
+            high_water = initial_capital
+            total_pnl_combine = 0.0
+            winning_days_current = 0
+
+        if cash < high_water - trailing_dd:
+            resets += 1
+            failed_combines += 1
+            cash = initial_capital
+            high_water = initial_capital
+            total_pnl_combine = 0.0
+            winning_days_current = 0
+
+    if paid_count > 0:
+        eval_pass_days = np.median(paid_days[:paid_count])
+    else:
+        eval_pass_days = np.nan
+
+    weekly_payout = (total_payouts / (n_days / 5.0)) if n_days > 0 else 0.0
+
+    out = np.empty(5, dtype=np.float64)
+    out[0] = weekly_payout
+    out[1] = eval_pass_days
+    out[2] = total_payouts
+    out[3] = float(payouts_count)
+    out[4] = float(failed_combines)
+    return out
+
+
+METRIC_KEYS = ["weekly_payout", "eval_pass_days", "total_payouts", "payouts_count", "failed_combines"]
+
+
+def simulate_daily_path(daily_pnl: np.ndarray, spec: dict) -> Dict[str, float]:
+    arr = _simulate_daily_path(
+        np.asarray(daily_pnl, dtype=np.float64),
+        float(spec["profit_target"]),
+        float(spec["daily_dd"]),
+        float(spec["trailing_dd"]),
+        float(spec["payout_cap"]),
+        int(spec["min_winning_days"]),
+        float(spec["payout_pct_of_balance"]),
+        float(spec["initial_capital"]),
+    )
+    return {k: float(v) for k, v in zip(METRIC_KEYS, arr)}
+
+
+def mc_draw(daily_pnl: np.ndarray, spec: dict, seed: int) -> Dict[str, float]:
+    rng = np.random.default_rng(seed)
+    n_days = len(daily_pnl)
+    idx = rng.integers(0, n_days, size=n_days)
+    return simulate_daily_path(daily_pnl[idx], spec)
+
+
+def bootstrap_draw(daily_pnl: np.ndarray, spec: dict, seed: int, block_size: int = 5) -> Dict[str, float]:
+    rng = np.random.default_rng(seed)
+    n_days = len(daily_pnl)
+    n_blocks = int(np.ceil(n_days / block_size))
+    sampled_starts = rng.integers(0, n_days - block_size + 1, size=n_blocks)
+    idx = np.empty(n_blocks * block_size, dtype=np.int64)
+    for i, start in enumerate(sampled_starts):
+        idx[i * block_size : (i + 1) * block_size] = np.arange(start, start + block_size)
+    idx = idx[:n_days]
+    return simulate_daily_path(daily_pnl[idx], spec)
+
+
+def run_mc_boot(daily_pnl: np.ndarray, spec: dict, n_mc: int, n_boot: int, seed_offset: int = 0) -> Tuple[List[Dict], List[Dict]]:
+    mc = [mc_draw(daily_pnl, spec, RANDOM_SEED + seed_offset + i) for i in range(n_mc)]
+    boot = [bootstrap_draw(daily_pnl, spec, RANDOM_SEED + seed_offset + n_mc + i) for i in range(n_boot)]
+    return mc, boot
+
+
+def summarize_series(values: np.ndarray) -> Dict[str, float]:
+    clean = np.array(values, dtype=float)
+    clean = clean[np.isfinite(clean)]
+    if len(clean) == 0:
+        return {k: np.nan for k in ["mean", "median", "min", "max", "p5", "p25", "p75", "p95", "std"]}
+    return {
+        "mean": float(np.mean(clean)),
+        "median": float(np.median(clean)),
+        "min": float(np.min(clean)),
+        "max": float(np.max(clean)),
+        "p5": float(np.percentile(clean, 5)),
+        "p25": float(np.percentile(clean, 25)),
+        "p75": float(np.percentile(clean, 75)),
+        "p95": float(np.percentile(clean, 95)),
+        "std": float(np.std(clean)),
+    }
+
+
+def cluster_label(values: np.ndarray, n_clusters: int = 3) -> str:
+    clean = np.array(values, dtype=float)
+    clean = clean[np.isfinite(clean)]
+    if len(clean) < n_clusters:
+        return "n/a"
+    try:
+        from sklearn.cluster import KMeans
+        km = KMeans(n_clusters=n_clusters, random_state=RANDOM_SEED, n_init="auto")
+        labels = km.fit_predict(clean.reshape(-1, 1))
+        centers = sorted(km.cluster_centers_.flatten())
+        return "; ".join(f"C{i+1}~{c:.1f}" for i, c in enumerate(centers))
+    except Exception:
+        counts, edges = np.histogram(clean, bins=5)
+        return "; ".join(f"[{edges[i]:.1f},{edges[i+1]:.1f}):{counts[i]}" for i in range(len(counts)))
+
+
+def add_distribution_stats(row: Dict[str, Any], draws: List[Dict[str, float]], prefix: str) -> Dict[str, Any]:
+    for metric in ["weekly_payout", "eval_pass_days", "total_payouts", "failed_combines"]:
+        vals = np.array([d[metric] for d in draws])
+        stats = summarize_series(vals)
+        for k, v in stats.items():
+            row[f"{prefix}_{metric}_{k}"] = v
+        row[f"{prefix}_{metric}_clusters"] = cluster_label(vals)
+    return row
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Standard-account robustness optimization + eval contract-size sweep."
+    )
+    parser.add_argument(
+        "--account",
+        choices=ALL_ACCOUNT_SPECS + ["all"],
+        default="all",
+        help="Account spec to run (default: all).",
+    )
+    parser.add_argument(
+        "--objective",
+        choices=OBJECTIVE_CHOICES,
+        default="all",
+        help="Objective to run (default: all).",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=OUT_CSV,
+        help="Output CSV path (default: repo root report).",
+    )
+    return parser
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main(argv=None):
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    account_specs = ALL_ACCOUNT_SPECS if args.account == "all" else [args.account]
+    requested_objectives = {args.objective} if args.objective != "all" else set(OBJECTIVE_CHOICES) - {"all"}
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print("[main] initializing worker...")
+    _init_worker(DATA_DIR)
+
+    print(f"[main] loading {RESULTS_CSV}...")
+    df = pd.read_csv(RESULTS_CSV)
+    df["daily_profit_cap_mode"] = df["daily_profit_cap_mode"].astype(bool)
+    df["strategy_key"] = df.apply(build_strategy_key, axis=1)
+    df = df[df["daily_profit_cap_mode"] == False].copy()
+
+    print(f"[main] total candidate rows: {len(df)}")
+    print(f"[main] accounts={account_specs} objectives={sorted(requested_objectives)}")
+    records = []
+
+    for spec_name in account_specs:
+        print(f"\n[main] ===== {spec_name} =====")
+        spec = get_spec_dict(spec_name)
+        max_contracts = spec["max_contracts"]
+        base = df[df["account_spec"] == spec_name].copy()
+
+        # Pre-generate trades and raw-score every strategy with max_contracts
+        print("[main] raw-scoring all strategies...")
+        scored = []
+        for _, row in base.iterrows():
+            key = row["strategy_key"]
+            try:
+                _, trades = generate_trades_for_row(row.to_dict(), START_DATE, END_DATE)
+                if trades.empty:
+                    continue
+                trades_scaled = trades.copy()
+                trades_scaled["pnl"] = trades_scaled["pnl"] * max_contracts
+                sim = simulate_topstep_payouts_detailed(trades_scaled, spec, contracts=max_contracts)
+                scored.append({
+                    **row.to_dict(),
+                    "trades": trades,
+                    "raw_weekly": sim["avg_payout_per_week"],
+                    "raw_eval_days": sim["eval_pass_days"],
+                    "raw_pass_rate": sim["pass_rate"],
+                })
+            except Exception as e:
+                print(f"[warn] failed {key}: {e}")
+                continue
+
+        scored_df = pd.DataFrame(scored)
+        print(f"[main] successfully scored {len(scored_df)} strategies")
+
+        # ------------------------------------------------------------------
+        # Robustness objective: top 20% by raw, then rank by bootstrap payout
+        # ------------------------------------------------------------------
+        if "robust" in requested_objectives:
+            print("[main] running robustness selection...")
+            top_n = max(1, int(len(scored_df) * ROBUST_TOP_FRAC))
+            robust_candidates = scored_df.sort_values("raw_weekly", ascending=False).head(top_n).copy()
+
+            # Bootstrap ranking on survivors (reduced draws)
+            boot_scores = []
+            for _, row in robust_candidates.iterrows():
+                trades_scaled = row["trades"].copy()
+                trades_scaled["pnl"] = trades_scaled["pnl"] * max_contracts
+                sim = simulate_topstep_payouts_detailed(trades_scaled, spec, contracts=max_contracts)
+                daily_pnl = sim["daily_pnl"].values.astype(np.float64)
+                _, boot = run_mc_boot(daily_pnl, spec, n_mc=0, n_boot=N_BOOT_RANK, seed_offset=0)
+                boot_weekly = np.mean([d["weekly_payout"] for d in boot])
+                boot_scores.append({
+                    **row.to_dict(),
+                    "boot_weekly_rank": boot_weekly,
+                    "daily_pnl": sim["daily_pnl"],
+                })
+            boot_df = pd.DataFrame(boot_scores)
+
+            robust_london = boot_df[boot_df["session"] == "London"].sort_values("boot_weekly_rank", ascending=False).iloc[0]
+            robust_ny = boot_df[boot_df["session"] == "NY"].sort_values("boot_weekly_rank", ascending=False).iloc[0]
+
+            combined = pd.concat([robust_london["trades"], robust_ny["trades"]], ignore_index=True)
+            combined["pnl"] = combined["pnl"] * max_contracts
+            combined = combined.sort_values("exit_time").reset_index(drop=True)
+            sim = simulate_topstep_payouts_detailed(combined, spec, contracts=max_contracts)
+            daily_pnl = sim["daily_pnl"].values.astype(np.float64)
+            mc, boot = run_mc_boot(daily_pnl, spec, N_MC_FULL, N_BOOT_FULL, seed_offset=100000)
+
+            row = {
+                "account_spec": spec_name,
+                "objective": "robust",
+                "london_strategy": robust_london["strategy_key"],
+                "ny_strategy": robust_ny["strategy_key"],
+                "contracts": max_contracts,
+                "raw_weekly_payout": sim["avg_payout_per_week"],
+                "raw_eval_pass_days": sim["eval_pass_days"],
+                "raw_pass_rate": sim["pass_rate"],
+                "raw_win_rate": sim["win_rate"],
+                "raw_max_drawdown_pct": sim["max_drawdown_pct"],
+            }
+            row = add_distribution_stats(row, mc, "mc")
+            row = add_distribution_stats(row, boot, "boot")
+            records.append(row)
+            print(f"[main] robust: London={robust_london['strategy_key']} | NY={robust_ny['strategy_key']} | raw=${sim['avg_payout_per_week']:.0f}")
+
+        # ------------------------------------------------------------------
+        # Eval contract sweep: 1-5 contracts
+        # ------------------------------------------------------------------
+        for contracts in EVAL_CONTRACT_SIZES:
+            if f"eval_{contracts}" not in requested_objectives:
+                continue
+
+            print(f"[main] eval contract sweep: {contracts} contracts...")
+            eval_scores = []
+            for _, row in scored_df.iterrows():
+                trades_scaled = row["trades"].copy()
+                trades_scaled["pnl"] = trades_scaled["pnl"] * contracts
+                sim = simulate_topstep_payouts_detailed(trades_scaled, spec, contracts=contracts)
+                eval_scores.append({
+                    **row.to_dict(),
+                    "eval_weekly": sim["avg_payout_per_week"],
+                    "eval_days": sim["eval_pass_days"],
+                    "eval_pass_rate": sim["pass_rate"],
+                    "daily_pnl": sim["daily_pnl"],
+                })
+            eval_df = pd.DataFrame(eval_scores)
+            eval_cands = eval_df[eval_df["eval_pass_rate"] >= 50.0].copy()
+            if eval_cands.empty:
+                eval_cands = eval_df.copy()
+
+            eval_london = eval_cands[eval_cands["session"] == "London"].sort_values(["eval_days", "eval_pass_rate"], ascending=[True, False]).iloc[0]
+            eval_ny = eval_cands[eval_cands["session"] == "NY"].sort_values(["eval_days", "eval_pass_rate"], ascending=[True, False]).iloc[0]
+
+            combined = pd.concat([eval_london["trades"], eval_ny["trades"]], ignore_index=True)
+            combined["pnl"] = combined["pnl"] * contracts
+            combined = combined.sort_values("exit_time").reset_index(drop=True)
+            sim = simulate_topstep_payouts_detailed(combined, spec, contracts=contracts)
+            daily_pnl = sim["daily_pnl"].values.astype(np.float64)
+            mc, boot = run_mc_boot(daily_pnl, spec, N_MC_FULL, N_BOOT_FULL, seed_offset=200000 + contracts * 10000)
+
+            row = {
+                "account_spec": spec_name,
+                "objective": f"eval_{contracts}",
+                "london_strategy": eval_london["strategy_key"],
+                "ny_strategy": eval_ny["strategy_key"],
+                "contracts": contracts,
+                "raw_weekly_payout": sim["avg_payout_per_week"],
+                "raw_eval_pass_days": sim["eval_pass_days"],
+                "raw_pass_rate": sim["pass_rate"],
+                "raw_win_rate": sim["win_rate"],
+                "raw_max_drawdown_pct": sim["max_drawdown_pct"],
+            }
+            row = add_distribution_stats(row, mc, "mc")
+            row = add_distribution_stats(row, boot, "boot")
+            records.append(row)
+            print(f"[main]   {contracts}ctr: London={eval_london['strategy_key']} | NY={eval_ny['strategy_key']} | raw_weekly=${sim['avg_payout_per_week']:.0f} | eval_days={sim['eval_pass_days']:.1f} | pass_rate={sim['pass_rate']:.1f}%")
+
+    out_df = pd.DataFrame(records)
+    out_df.to_csv(out_path, index=False)
+    print(f"\n[main] report saved to {out_path}")
+    if not out_df.empty:
+        print(out_df[["account_spec", "objective", "contracts", "london_strategy", "ny_strategy", "raw_weekly_payout", "boot_weekly_payout_mean", "raw_eval_pass_days", "boot_eval_pass_days_mean", "raw_pass_rate"]].to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()
