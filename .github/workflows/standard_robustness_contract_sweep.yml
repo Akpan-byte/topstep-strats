@@ -1,0 +1,120 @@
+# CHANGE_SUMMARY
+# 2026-08-26  coder
+#   - Created standard_robustness_contract_sweep.yml to run the standard-account
+#     robustness + eval contract-size sweep (1-5 contracts) on GitHub Actions.
+#   - Matrix: 2 accounts x 6 objectives = 12 parallel sweep jobs + 1 aggregate job.
+#   - Each job builds the Rust engine, downloads data-v2.0 parquet, runs one cell,
+#     and uploads a partial CSV.
+#   - Aggregate downloads all partial CSVs, concatenates them, and uploads the
+#     final report as an artifact.
+# WHY: The sweep is compute-heavy; running it on GitHub Actions keeps the VM free
+#      and exploits 12 parallel workers.
+
+name: Standard Robustness Contract Sweep
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        account: ["50k_standard", "150k_standard"]
+        objective: ["robust", "eval_1", "eval_2", "eval_3", "eval_4", "eval_5"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Build Rust engine
+        run: |
+          cd engine_rust
+          pip install maturin
+          maturin develop --release
+
+      - name: Download market data (data-v2.0 parquet)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p data
+          gh release download data-v2.0 --repo ${{ github.repository }} \
+            --pattern 'ES_1min.parquet' \
+            --pattern 'NQ_1min.parquet' \
+            --pattern 'YM_1min.parquet' \
+            --dir data/
+          test -f data/ES_1min.parquet
+          test -f data/NQ_1min.parquet
+          test -f data/YM_1min.parquet
+
+      - name: Run sweep cell
+        run: |
+          python scripts/standard_robustness_contract_sweep.py \
+            --account ${{ matrix.account }} \
+            --objective ${{ matrix.objective }} \
+            --out standard_robustness_contract_sweep_report_${{ matrix.account }}_${{ matrix.objective }}.csv
+
+      - name: Upload partial CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: partial-${{ matrix.account }}-${{ matrix.objective }}
+          path: standard_robustness_contract_sweep_report_${{ matrix.account }}_${{ matrix.objective }}.csv
+          if-no-files-found: error
+
+  aggregate:
+    name: Aggregate partial results
+    needs: sweep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download all partial CSVs
+        uses: actions/download-artifact@v4
+        with:
+          path: partials
+          pattern: partial-*
+          merge-multiple: true
+
+      - name: Concatenate partial reports
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+
+          partial_files = sorted(Path("partials").glob("*.csv"))
+          if not partial_files:
+              raise RuntimeError("no partial CSVs found")
+
+          dfs = [pd.read_csv(p) for p in partial_files]
+          combined = pd.concat(dfs, ignore_index=True)
+          combined.to_csv("standard_robustness_contract_sweep_report.csv", index=False)
+          print(f"concatenated {len(dfs)} partial files -> {len(combined)} rows")
+          PY
+
+      - name: Upload final report
+        uses: actions/upload-artifact@v4
+        with:
+          name: standard-robustness-contract-sweep-report
+          path: standard_robustness_contract_sweep_report.csv
+          if-no-files-found: error
