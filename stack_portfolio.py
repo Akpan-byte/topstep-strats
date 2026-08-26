@@ -118,7 +118,7 @@ def _paper1_entry_signals(sid: str, instrument: str, session: str, start: str, e
     mask = get_session_mask(df, cfg["session_start"], cfg["session_end"], cfg["tz"])
     df_s = split_by_date(df.loc[mask].copy(), start, end)
     try:
-        entry = generate_paper1_signals(df_s, cfg, simulate_exits=False)
+        entry = generate_paper1_signals(df_s, cfg)
     except Exception as exc:
         print(f"[worker] signal gen failed {key}: {exc}", file=sys.stderr)
         entry = pd.DataFrame(columns=["entry_time", "direction", "entry_price", "atr_value"])
