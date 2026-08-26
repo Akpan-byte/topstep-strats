@@ -13,6 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         account: [50k_standard, 150k_standard]
+        objective: [robustness, eval_1ctr, eval_2ctr, eval_3ctr, eval_4ctr, eval_5ctr]
 
     steps:
       - name: Checkout repository
@@ -51,18 +52,19 @@ jobs:
           test -f data/ES_1min.parquet
           test -f data/YM_1min.parquet
 
-      - name: Run standard robustness + eval contract sweep
+      - name: Run standard robustness + eval contract sweep cell
         env:
           TOPSTEP_DATA_DIR: ${{ github.workspace }}/data
         run: |
-          python scripts/standard_robustness_contract_sweep.py --account ${{ matrix.account }}
-          mv standard_robustness_contract_sweep_report.csv standard_robustness_contract_sweep_report_${{ matrix.account }}.csv
+          python scripts/standard_robustness_contract_sweep.py \
+            --account ${{ matrix.account }} \
+            --objective ${{ matrix.objective }}
 
       - name: Upload partial report
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.account }}-report
-          path: standard_robustness_contract_sweep_report_${{ matrix.account }}.csv
+          name: ${{ matrix.account }}-${{ matrix.objective }}-report
+          path: standard_robustness_contract_sweep_report_${{ matrix.account }}_${{ matrix.objective }}.csv
           if-no-files-found: error
 
   aggregate:
@@ -78,9 +80,11 @@ jobs:
 
       - name: Combine reports
         run: |
-          head -1 artifacts/standard_robustness_contract_sweep_report_50k_standard.csv > standard_robustness_contract_sweep_report.csv
-          tail -n +2 artifacts/standard_robustness_contract_sweep_report_50k_standard.csv >> standard_robustness_contract_sweep_report.csv
-          tail -n +2 artifacts/standard_robustness_contract_sweep_report_150k_standard.csv >> standard_robustness_contract_sweep_report.csv
+          files=(artifacts/standard_robustness_contract_sweep_report_*.csv)
+          head -1 "${files[0]}" > standard_robustness_contract_sweep_report.csv
+          for f in "${files[@]}"; do
+            tail -n +2 "$f" >> standard_robustness_contract_sweep_report.csv
+          done
           wc -l standard_robustness_contract_sweep_report.csv
 
       - name: Upload combined report

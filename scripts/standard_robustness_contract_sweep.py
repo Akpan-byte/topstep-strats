@@ -63,6 +63,7 @@ ROBUST_TOP_FRAC = 0.20
 
 ACCOUNT_SPECS = ["50k_standard", "150k_standard"]
 EVAL_CONTRACT_SIZES = [1, 2, 3, 4, 5]
+OBJECTIVES = ["robustness"] + [f"eval_{c}ctr" for c in EVAL_CONTRACT_SIZES]
 
 
 def get_spec_dict(spec_name: str) -> dict:
@@ -439,7 +440,7 @@ def add_distribution_stats(row: Dict[str, Any], draws: List[Dict[str, float]], p
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main():
+def main(objective: str = "all"):
     print("[main] initializing worker...")
     _init_worker(DATA_DIR)
 
@@ -487,57 +488,60 @@ def main():
         # ------------------------------------------------------------------
         # Robustness objective: top 20% by raw, then rank by bootstrap payout
         # ------------------------------------------------------------------
-        print("[main] running robustness selection...")
-        top_n = max(1, int(len(scored_df) * ROBUST_TOP_FRAC))
-        robust_candidates = scored_df.sort_values("raw_weekly", ascending=False).head(top_n).copy()
-
-        # Bootstrap ranking on survivors (reduced draws)
-        boot_scores = []
-        for _, row in robust_candidates.iterrows():
-            trades_scaled = row["trades"].copy()
-            trades_scaled["pnl"] = trades_scaled["pnl"] * max_contracts
-            sim = simulate_topstep_payouts_detailed(trades_scaled, spec, contracts=max_contracts)
+        if objective in ("all", "robustness"):
+            print("[main] running robustness selection...")
+            top_n = max(1, int(len(scored_df) * ROBUST_TOP_FRAC))
+            robust_candidates = scored_df.sort_values("raw_weekly", ascending=False).head(top_n).copy()
+    
+            # Bootstrap ranking on survivors (reduced draws)
+            boot_scores = []
+            for _, row in robust_candidates.iterrows():
+                trades_scaled = row["trades"].copy()
+                trades_scaled["pnl"] = trades_scaled["pnl"] * max_contracts
+                sim = simulate_topstep_payouts_detailed(trades_scaled, spec, contracts=max_contracts)
+                daily_pnl = sim["daily_pnl"].values.astype(np.float64)
+                _, boot = run_mc_boot(daily_pnl, spec, n_mc=0, n_boot=N_BOOT_RANK, seed_offset=0)
+                boot_weekly = np.mean([d["weekly_payout"] for d in boot])
+                boot_scores.append({
+                    **row.to_dict(),
+                    "boot_weekly_rank": boot_weekly,
+                    "daily_pnl": sim["daily_pnl"],
+                })
+            boot_df = pd.DataFrame(boot_scores)
+    
+            robust_london = boot_df[boot_df["session"] == "London"].sort_values("boot_weekly_rank", ascending=False).iloc[0]
+            robust_ny = boot_df[boot_df["session"] == "NY"].sort_values("boot_weekly_rank", ascending=False).iloc[0]
+    
+            combined = pd.concat([robust_london["trades"], robust_ny["trades"]], ignore_index=True)
+            combined["pnl"] = combined["pnl"] * max_contracts
+            combined = combined.sort_values("exit_time").reset_index(drop=True)
+            sim = simulate_topstep_payouts_detailed(combined, spec, contracts=max_contracts)
             daily_pnl = sim["daily_pnl"].values.astype(np.float64)
-            _, boot = run_mc_boot(daily_pnl, spec, n_mc=0, n_boot=N_BOOT_RANK, seed_offset=0)
-            boot_weekly = np.mean([d["weekly_payout"] for d in boot])
-            boot_scores.append({
-                **row.to_dict(),
-                "boot_weekly_rank": boot_weekly,
-                "daily_pnl": sim["daily_pnl"],
-            })
-        boot_df = pd.DataFrame(boot_scores)
-
-        robust_london = boot_df[boot_df["session"] == "London"].sort_values("boot_weekly_rank", ascending=False).iloc[0]
-        robust_ny = boot_df[boot_df["session"] == "NY"].sort_values("boot_weekly_rank", ascending=False).iloc[0]
-
-        combined = pd.concat([robust_london["trades"], robust_ny["trades"]], ignore_index=True)
-        combined["pnl"] = combined["pnl"] * max_contracts
-        combined = combined.sort_values("exit_time").reset_index(drop=True)
-        sim = simulate_topstep_payouts_detailed(combined, spec, contracts=max_contracts)
-        daily_pnl = sim["daily_pnl"].values.astype(np.float64)
-        mc, boot = run_mc_boot(daily_pnl, spec, N_MC_FULL, N_BOOT_FULL, seed_offset=100000)
-
-        row = {
-            "account_spec": spec_name,
-            "objective": "robustness",
-            "london_strategy": robust_london["strategy_key"],
-            "ny_strategy": robust_ny["strategy_key"],
-            "contracts": max_contracts,
-            "raw_weekly_payout": sim["avg_payout_per_week"],
-            "raw_eval_pass_days": sim["eval_pass_days"],
-            "raw_pass_rate": sim["pass_rate"],
-            "raw_win_rate": sim["win_rate"],
-            "raw_max_drawdown_pct": sim["max_drawdown_pct"],
-        }
-        row = add_distribution_stats(row, mc, "mc")
-        row = add_distribution_stats(row, boot, "boot")
-        records.append(row)
-        print(f"[main] robustness: London={robust_london['strategy_key']} | NY={robust_ny['strategy_key']} | raw=${sim['avg_payout_per_week']:.0f}")
+            mc, boot = run_mc_boot(daily_pnl, spec, N_MC_FULL, N_BOOT_FULL, seed_offset=100000)
+    
+            row = {
+                "account_spec": spec_name,
+                "objective": "robustness",
+                "london_strategy": robust_london["strategy_key"],
+                "ny_strategy": robust_ny["strategy_key"],
+                "contracts": max_contracts,
+                "raw_weekly_payout": sim["avg_payout_per_week"],
+                "raw_eval_pass_days": sim["eval_pass_days"],
+                "raw_pass_rate": sim["pass_rate"],
+                "raw_win_rate": sim["win_rate"],
+                "raw_max_drawdown_pct": sim["max_drawdown_pct"],
+            }
+            row = add_distribution_stats(row, mc, "mc")
+            row = add_distribution_stats(row, boot, "boot")
+            records.append(row)
+            print(f"[main] robustness: London={robust_london['strategy_key']} | NY={robust_ny['strategy_key']} | raw=${sim['avg_payout_per_week']:.0f}")
 
         # ------------------------------------------------------------------
         # Eval contract sweep: 1-5 contracts
         # ------------------------------------------------------------------
         for contracts in EVAL_CONTRACT_SIZES:
+            if objective not in ("all", f"eval_{contracts}ctr"):
+                continue
             print(f"[main] eval contract sweep: {contracts} contracts...")
             eval_scores = []
             for _, row in scored_df.iterrows():
@@ -584,8 +588,11 @@ def main():
             print(f"[main]   {contracts}ctr: London={eval_london['strategy_key']} | NY={eval_ny['strategy_key']} | raw_weekly=${sim['avg_payout_per_week']:.0f} | eval_days={sim['eval_pass_days']:.1f} | pass_rate={sim['pass_rate']:.1f}%")
 
     out_df = pd.DataFrame(records)
-    out_df.to_csv(OUT_CSV, index=False)
-    print(f"\n[main] report saved to {OUT_CSV}")
+    out_csv = OUT_CSV
+    if objective != "all":
+        out_csv = _PROJECT_ROOT / f"standard_robustness_contract_sweep_report_{spec_name}_{objective}.csv"
+    out_df.to_csv(out_csv, index=False)
+    print(f"\n[main] report saved to {out_csv}")
     print(out_df[["account_spec", "objective", "contracts", "london_strategy", "ny_strategy", "raw_weekly_payout", "boot_weekly_payout_mean", "raw_eval_pass_days", "boot_eval_pass_days_mean", "raw_pass_rate"]].to_string(index=False))
 
 
@@ -599,7 +606,13 @@ if __name__ == "__main__":
         default=None,
         help="Run only one account spec (default: both)",
     )
+    parser.add_argument(
+        "--objective",
+        choices=OBJECTIVES + ["all"],
+        default="all",
+        help="Run only one objective (default: all)",
+    )
     args = parser.parse_args()
     if args.account:
         ACCOUNT_SPECS = [args.account]
-    main()
+    main(objective=args.objective)
