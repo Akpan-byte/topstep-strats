@@ -1,22 +1,10 @@
-# CHANGE_SUMMARY
-# 2026-08-26  coder
-#   - Created standard_robustness_contract_sweep.yml to run the standard-account
-#     robustness + eval contract-size sweep (1-5 contracts) on GitHub Actions.
-#   - Matrix: 2 accounts x 6 objectives = 12 parallel sweep jobs + 1 aggregate job.
-#   - Each job builds the Rust engine, downloads data-v2.0 parquet, runs one cell,
-#     and uploads a partial CSV.
-#   - Aggregate downloads all partial CSVs, concatenates them, and uploads the
-#     final report as an artifact.
-# WHY: The sweep is compute-heavy; running it on GitHub Actions keeps the VM free
-#      and exploits 12 parallel workers.
-
 name: Standard Robustness Contract Sweep
 
 on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   sweep:
@@ -24,8 +12,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        account: ["50k_standard", "150k_standard"]
-        objective: ["robust", "eval_1", "eval_2", "eval_3", "eval_4", "eval_5"]
+        account: [50k_standard, 150k_standard]
+        objective: [robustness, eval_1ctr, eval_2ctr, eval_3ctr, eval_4ctr, eval_5ctr]
 
     steps:
       - name: Checkout repository
@@ -34,24 +22,23 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache: "pip"
 
-      - name: Install Python dependencies
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python dependencies and maturin
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-action@stable
+          pip install -r requirements.txt maturin
 
       - name: Build Rust engine
         run: |
           cd engine_rust
-          pip install maturin
           maturin develop --release
 
-      - name: Download market data (data-v2.0 parquet)
+      - name: Fetch ES/NQ/YM market data (data-v2.0 parquet)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -61,58 +48,53 @@ jobs:
             --pattern 'NQ_1min.parquet' \
             --pattern 'YM_1min.parquet' \
             --dir data/
-          test -f data/ES_1min.parquet
           test -f data/NQ_1min.parquet
+          test -f data/ES_1min.parquet
           test -f data/YM_1min.parquet
 
-      - name: Run sweep cell
+      - name: Fetch candidate payout CSV from Google Drive
+        run: |
+          mkdir -p gh_results/rust_sweep_v4
+          curl -L -o gh_results/rust_sweep_v4/payout_analysis_comprehensive.csv \
+            'https://drive.google.com/uc?export=download&id=1403p4zKtNEZO3DI_g2n3VWFIW1LUYyQA'
+          test -s gh_results/rust_sweep_v4/payout_analysis_comprehensive.csv
+
+      - name: Run standard robustness + eval contract sweep cell
+        env:
+          TOPSTEP_DATA_DIR: ${{ github.workspace }}/data
         run: |
           python scripts/standard_robustness_contract_sweep.py \
             --account ${{ matrix.account }} \
-            --objective ${{ matrix.objective }} \
-            --out standard_robustness_contract_sweep_report_${{ matrix.account }}_${{ matrix.objective }}.csv
+            --objective ${{ matrix.objective }}
 
-      - name: Upload partial CSV
+      - name: Upload partial report
         uses: actions/upload-artifact@v4
         with:
-          name: partial-${{ matrix.account }}-${{ matrix.objective }}
+          name: ${{ matrix.account }}-${{ matrix.objective }}-report
           path: standard_robustness_contract_sweep_report_${{ matrix.account }}_${{ matrix.objective }}.csv
           if-no-files-found: error
 
   aggregate:
-    name: Aggregate partial results
     needs: sweep
     runs-on: ubuntu-latest
     steps:
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Download all partial CSVs
+      - name: Download partial reports
         uses: actions/download-artifact@v4
         with:
-          path: partials
-          pattern: partial-*
+          path: artifacts
+          pattern: "*-report"
           merge-multiple: true
 
-      - name: Concatenate partial reports
+      - name: Combine reports
         run: |
-          python - <<'PY'
-          import pandas as pd
-          from pathlib import Path
+          files=(artifacts/standard_robustness_contract_sweep_report_*.csv)
+          head -1 "${files[0]}" > standard_robustness_contract_sweep_report.csv
+          for f in "${files[@]}"; do
+            tail -n +2 "$f" >> standard_robustness_contract_sweep_report.csv
+          done
+          wc -l standard_robustness_contract_sweep_report.csv
 
-          partial_files = sorted(Path("partials").glob("*.csv"))
-          if not partial_files:
-              raise RuntimeError("no partial CSVs found")
-
-          dfs = [pd.read_csv(p) for p in partial_files]
-          combined = pd.concat(dfs, ignore_index=True)
-          combined.to_csv("standard_robustness_contract_sweep_report.csv", index=False)
-          print(f"concatenated {len(dfs)} partial files -> {len(combined)} rows")
-          PY
-
-      - name: Upload final report
+      - name: Upload combined report
         uses: actions/upload-artifact@v4
         with:
           name: standard-robustness-contract-sweep-report
