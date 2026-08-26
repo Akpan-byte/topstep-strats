@@ -33,10 +33,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt maturin
 
-      - name: Build Rust engine
+      - name: Build and install Rust engine
         run: |
           cd engine_rust
-          maturin develop --release
+          maturin build --release
+          pip install target/wheels/*.whl
 
       - name: Fetch ES/NQ/YM market data (data-v2.0 parquet)
         env:
@@ -51,13 +52,6 @@ jobs:
           test -f data/NQ_1min.parquet
           test -f data/ES_1min.parquet
           test -f data/YM_1min.parquet
-
-      - name: Fetch candidate payout CSV from Google Drive
-        run: |
-          mkdir -p gh_results/rust_sweep_v4
-          curl -L -o gh_results/rust_sweep_v4/payout_analysis_comprehensive.csv \
-            'https://drive.google.com/uc?export=download&id=1403p4zKtNEZO3DI_g2n3VWFIW1LUYyQA'
-          test -s gh_results/rust_sweep_v4/payout_analysis_comprehensive.csv
 
       - name: Run standard robustness + eval contract sweep cell
         env:
