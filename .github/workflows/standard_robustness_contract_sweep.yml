@@ -52,6 +52,13 @@ jobs:
           test -f data/ES_1min.parquet
           test -f data/YM_1min.parquet
 
+      - name: Fetch candidate payout CSV from Google Drive
+        run: |
+          mkdir -p gh_results/rust_sweep_v4
+          curl -L -o gh_results/rust_sweep_v4/payout_analysis_comprehensive.csv \
+            'https://drive.google.com/uc?export=download&id=1403p4zKtNEZO3DI_g2n3VWFIW1LUYyQA'
+          test -s gh_results/rust_sweep_v4/payout_analysis_comprehensive.csv
+
       - name: Run standard robustness + eval contract sweep cell
         env:
           TOPSTEP_DATA_DIR: ${{ github.workspace }}/data
