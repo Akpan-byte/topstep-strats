@@ -35,11 +35,10 @@ jobs:
           .venv/bin/pip install -r requirements.txt maturin
 
       - name: Build and install Rust engine
-        env:
-          VIRTUAL_ENV: ${{ github.workspace }}/.venv
         run: |
+          source ${{ github.workspace }}/.venv/bin/activate
           cd engine_rust
-          ${{ github.workspace }}/.venv/bin/maturin develop --release
+          maturin develop --release
 
       - name: Fetch ES/NQ/YM market data (data-v2.0 parquet)
         env:
