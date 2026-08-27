@@ -36,8 +36,7 @@ jobs:
       - name: Build and install Rust engine
         run: |
           cd engine_rust
-          maturin build --release
-          pip install target/wheels/*.whl
+          maturin develop --release
 
       - name: Fetch ES/NQ/YM market data (data-v2.0 parquet)
         env:

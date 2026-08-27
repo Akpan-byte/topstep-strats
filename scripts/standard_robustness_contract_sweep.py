@@ -505,6 +505,11 @@ def main(objective: str = "all"):
 
         scored_df = pd.DataFrame(scored)
         print(f"[main] successfully scored {len(scored_df)} strategies")
+        if scored_df.empty:
+            raise RuntimeError(
+                f"No strategies were successfully scored for {spec_name}. "
+                "This usually means the Rust extension is not built or the trade-log generation failed."
+            )
 
         # ------------------------------------------------------------------
         # Robustness objective: top 20% by raw, then rank by bootstrap payout
