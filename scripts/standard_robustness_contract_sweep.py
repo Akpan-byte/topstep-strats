@@ -56,9 +56,9 @@ RESULTS_CSV = (
 OUT_CSV = _PROJECT_ROOT / "standard_robustness_contract_sweep_report.csv"
 START_DATE = "2016-06-01"
 END_DATE = "2026-05-29"
-N_MC_FULL = int(os.environ.get("STD_ROBUST_N_MC", "5000"))
-N_BOOT_FULL = int(os.environ.get("STD_ROBUST_N_BOOT", "5000"))
-N_BOOT_RANK = int(os.environ.get("STD_ROBUST_N_BOOT_RANK", "500"))
+N_MC_FULL = int(os.environ.get("STD_ROBUST_N_MC", "2000"))
+N_BOOT_FULL = int(os.environ.get("STD_ROBUST_N_BOOT", "2000"))
+N_BOOT_RANK = int(os.environ.get("STD_ROBUST_N_BOOT_RANK", "200"))
 RANDOM_SEED = 42
 ROBUST_TOP_FRAC = 0.20
 
@@ -69,7 +69,7 @@ OBJECTIVES = ["robustness"] + [f"eval_{c}ctr" for c in EVAL_CONTRACT_SIZES]
 # Pre-filter candidates using the CSV's pre-computed avg_payout_per_week before
 # regenerating trade logs. This avoids regenerating trades for the full candidate
 # set on every matrix cell, which is prohibitively slow on GitHub runners.
-PRE_FILTER_TOP_N = int(os.environ.get("STD_ROBUST_PRE_FILTER", "60"))
+PRE_FILTER_TOP_N = int(os.environ.get("STD_ROBUST_PRE_FILTER", "30"))
 
 
 def get_spec_dict(spec_name: str) -> dict:
