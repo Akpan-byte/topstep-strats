@@ -491,9 +491,16 @@ def main(objective: str = "all"):
         # Pre-generate trades and raw-score every strategy with max_contracts.
         # Use the CSV's pre-computed avg_payout_per_week to narrow the field
         # before regenerating trade logs; this keeps the matrix cells fast.
+        # Pre-filter per session so London and NY are both represented.
         print("[main] pre-filtering candidates...")
-        base = base.sort_values("avg_payout_per_week", ascending=False).head(PRE_FILTER_TOP_N).copy()
-        print(f"[main] raw-scoring top {len(base)} strategies...")
+        per_session = PRE_FILTER_TOP_N // 2
+        base = (
+            base.sort_values("avg_payout_per_week", ascending=False)
+            .groupby("session", group_keys=False)
+            .head(per_session)
+            .copy()
+        )
+        print(f"[main] raw-scoring top {len(base)} strategies (per-session pre-filter)...")
         row_dicts = base.to_dict("records")
         workers = min(2, os.cpu_count() or 1)
         tasks = [(row, spec, max_contracts) for row in row_dicts]
