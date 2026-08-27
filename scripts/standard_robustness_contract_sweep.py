@@ -23,6 +23,7 @@ For standard accounts (consistency_rule=False):
 
 import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -70,6 +71,29 @@ def get_spec_dict(spec_name: str) -> dict:
     spec = TOPSTEP_SPECS[spec_name].copy()
     spec["consistency_rule"] = False
     return spec
+
+
+def _score_row(args: Tuple[dict, dict, int]) -> Dict[str, Any]:
+    """Score a single strategy row; intended for ProcessPoolExecutor."""
+    row_dict, spec, max_contracts = args
+    key = row_dict["strategy_key"]
+    try:
+        _, trades = generate_trades_for_row(row_dict, START_DATE, END_DATE)
+        if trades.empty:
+            return None
+        trades_scaled = trades.copy()
+        trades_scaled["pnl"] = trades_scaled["pnl"] * max_contracts
+        sim = simulate_topstep_payouts_detailed(trades_scaled, spec, contracts=max_contracts)
+        return {
+            **row_dict,
+            "trades": trades,
+            "raw_weekly": sim["avg_payout_per_week"],
+            "raw_eval_days": sim["eval_pass_days"],
+            "raw_pass_rate": sim["pass_rate"],
+        }
+    except Exception as e:
+        print(f"[warn] failed {key}: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -461,26 +485,14 @@ def main(objective: str = "all"):
 
         # Pre-generate trades and raw-score every strategy with max_contracts
         print("[main] raw-scoring all strategies...")
-        scored = []
-        for _, row in base.iterrows():
-            key = row["strategy_key"]
-            try:
-                _, trades = generate_trades_for_row(row.to_dict(), START_DATE, END_DATE)
-                if trades.empty:
-                    continue
-                trades_scaled = trades.copy()
-                trades_scaled["pnl"] = trades_scaled["pnl"] * max_contracts
-                sim = simulate_topstep_payouts_detailed(trades_scaled, spec, contracts=max_contracts)
-                scored.append({
-                    **row.to_dict(),
-                    "trades": trades,
-                    "raw_weekly": sim["avg_payout_per_week"],
-                    "raw_eval_days": sim["eval_pass_days"],
-                    "raw_pass_rate": sim["pass_rate"],
-                })
-            except Exception as e:
-                print(f"[warn] failed {key}: {e}")
-                continue
+        row_dicts = base.to_dict("records")
+        workers = min(4, os.cpu_count() or 1)
+        tasks = [(row, spec, max_contracts) for row in row_dicts]
+        scored: List[Dict[str, Any]] = []
+        with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(DATA_DIR,)) as pool:
+            for result in pool.map(_score_row, tasks):
+                if result is not None:
+                    scored.append(result)
 
         scored_df = pd.DataFrame(scored)
         print(f"[main] successfully scored {len(scored_df)} strategies")
