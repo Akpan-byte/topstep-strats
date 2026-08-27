@@ -71,6 +71,13 @@ OBJECTIVES = ["robustness"] + [f"eval_{c}ctr" for c in EVAL_CONTRACT_SIZES]
 # set on every matrix cell, which is prohibitively slow on GitHub runners.
 PRE_FILTER_TOP_N = int(os.environ.get("STD_ROBUST_PRE_FILTER", "30"))
 
+# Modes that generate a very large number of intra-day trades (e.g. hold_day,
+# hold_session) make the detailed trade-by-trade simulator prohibitively slow
+# during pre-filter scoring. Exclude them from the pre-filter so the sweep
+# finishes in a reasonable time; the final robustness/eval selections still use
+# the full simulator on the surviving fast-mode candidates.
+EXCLUDE_PRE_FILTER_MODES = {"hold_day", "hold_session"}
+
 
 def get_spec_dict(spec_name: str) -> dict:
     spec = TOPSTEP_SPECS[spec_name].copy()
@@ -97,7 +104,9 @@ def _score_row(args: Tuple[dict, dict, int]) -> Dict[str, Any]:
             "raw_pass_rate": sim["pass_rate"],
         }
     except Exception as e:
+        import traceback
         print(f"[warn] failed {key}: {e}")
+        traceback.print_exc()
         return None
 
 
@@ -493,6 +502,11 @@ def main(objective: str = "all"):
         # before regenerating trade logs; this keeps the matrix cells fast.
         # Pre-filter per session so London and NY are both represented.
         print("[main] pre-filtering candidates...")
+        before_exclude = len(base)
+        base = base[~base["mode"].isin(EXCLUDE_PRE_FILTER_MODES)].copy()
+        after_exclude = len(base)
+        if after_exclude < before_exclude:
+            print(f"[main] excluded {before_exclude - after_exclude} slow mode rows ({EXCLUDE_PRE_FILTER_MODES})")
         per_session = PRE_FILTER_TOP_N // 2
         base = (
             base.sort_values("avg_payout_per_week", ascending=False)
@@ -502,6 +516,19 @@ def main(objective: str = "all"):
         )
         print(f"[main] raw-scoring top {len(base)} strategies (per-session pre-filter)...")
         row_dicts = base.to_dict("records")
+
+        # Smoke test: generate trades for the first candidate in the main process
+        # so we get a clear traceback if the Rust engine / runner is broken.
+        print(f"[main] smoke-testing first candidate {row_dicts[0]['strategy_key']}...")
+        try:
+            _, smoke_trades = generate_trades_for_row(row_dicts[0], START_DATE, END_DATE)
+            print(f"[main] smoke test ok: {len(smoke_trades)} trades generated")
+        except Exception as exc:
+            import traceback
+            print(f"[main] smoke test FAILED: {exc}")
+            traceback.print_exc()
+            raise
+
         workers = min(2, os.cpu_count() or 1)
         tasks = [(row, spec, max_contracts) for row in row_dicts]
         scored: List[Dict[str, Any]] = []
