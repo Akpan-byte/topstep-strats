@@ -19,11 +19,10 @@ permissions:
 jobs:
   sweep:
     runs-on: ubuntu-latest
-    if: ${{ inputs.account == 'all' || inputs.account == matrix.account }}
     strategy:
       fail-fast: false
       matrix:
-        account: [50k_standard, 150k_standard]
+        account: ${{ fromJSON(inputs.account == 'all' && '["50k_standard", "150k_standard"]' || format('["{0}"]', inputs.account)) }}
         objective: [robustness, eval_1ctr, eval_2ctr, eval_3ctr, eval_4ctr, eval_5ctr]
 
     steps:
