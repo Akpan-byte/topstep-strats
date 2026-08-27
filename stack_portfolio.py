@@ -108,6 +108,18 @@ def _sid_to_str(sid: Any) -> str:
         return str(sid).zfill(3)
 
 
+def _compute_atr(df_1m: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """Compute a rolling ATR on 1-minute bars, returned indexed by the input index."""
+    df = df_1m.copy()
+    prev_close = df["close"].shift(1)
+    tr1 = df["high"] - df["low"]
+    tr2 = (df["high"] - prev_close).abs()
+    tr3 = (df["low"] - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=period, min_periods=1).mean()
+    return pd.DataFrame({"atr": atr}, index=df.index)
+
+
 def _paper1_entry_signals(sid: str, instrument: str, session: str, start: str, end: str) -> pd.DataFrame:
     key = ("p1", sid, instrument, session)
     cached = _worker_entry_cache.get(key)
@@ -122,6 +134,14 @@ def _paper1_entry_signals(sid: str, instrument: str, session: str, start: str, e
     except Exception as exc:
         print(f"[worker] signal gen failed {key}: {exc}", file=sys.stderr)
         entry = pd.DataFrame(columns=["entry_time", "direction", "entry_price", "atr_value"])
+    if not entry.empty and "atr_value" not in entry.columns:
+        # generate_signals returned completed trades; derive entry signals and attach ATR.
+        atr_df = _compute_atr(df_s)
+        entry["entry_time"] = pd.to_datetime(entry["entry_time"])
+        entry = entry.merge(atr_df, left_on="entry_time", right_index=True, how="left")
+        entry = entry.rename(columns={"atr": "atr_value"})
+        keep_cols = [c for c in ["entry_time", "direction", "entry_price", "atr_value"] if c in entry.columns]
+        entry = entry[keep_cols].copy()
     _worker_entry_cache[key] = entry
     return entry
 
