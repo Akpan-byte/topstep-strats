@@ -66,6 +66,11 @@ ACCOUNT_SPECS = ["50k_standard", "150k_standard"]
 EVAL_CONTRACT_SIZES = [1, 2, 3, 4, 5]
 OBJECTIVES = ["robustness"] + [f"eval_{c}ctr" for c in EVAL_CONTRACT_SIZES]
 
+# Pre-filter candidates using the CSV's pre-computed avg_payout_per_week before
+# regenerating trade logs. This avoids regenerating trades for the full candidate
+# set on every matrix cell, which is prohibitively slow on GitHub runners.
+PRE_FILTER_TOP_N = 200
+
 
 def get_spec_dict(spec_name: str) -> dict:
     spec = TOPSTEP_SPECS[spec_name].copy()
@@ -483,8 +488,12 @@ def main(objective: str = "all"):
         max_contracts = spec["max_contracts"]
         base = df[df["account_spec"] == spec_name].copy()
 
-        # Pre-generate trades and raw-score every strategy with max_contracts
-        print("[main] raw-scoring all strategies...")
+        # Pre-generate trades and raw-score every strategy with max_contracts.
+        # Use the CSV's pre-computed avg_payout_per_week to narrow the field
+        # before regenerating trade logs; this keeps the matrix cells fast.
+        print("[main] pre-filtering candidates...")
+        base = base.sort_values("avg_payout_per_week", ascending=False).head(PRE_FILTER_TOP_N).copy()
+        print(f"[main] raw-scoring top {len(base)} strategies...")
         row_dicts = base.to_dict("records")
         workers = min(2, os.cpu_count() or 1)
         tasks = [(row, spec, max_contracts) for row in row_dicts]
