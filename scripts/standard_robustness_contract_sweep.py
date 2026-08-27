@@ -517,7 +517,14 @@ def main(objective: str = "all"):
         if objective in ("all", "robustness"):
             print("[main] running robustness selection...")
             top_n = max(1, int(len(scored_df) * ROBUST_TOP_FRAC))
-            robust_candidates = scored_df.sort_values("raw_weekly", ascending=False).head(top_n).copy()
+            # Pick the top-N candidates within each session so that London and NY
+            # are both represented regardless of which session dominates globally.
+            robust_candidates = (
+                scored_df.sort_values("raw_weekly", ascending=False)
+                .groupby("session", group_keys=False)
+                .head(top_n)
+                .copy()
+            )
     
             # Bootstrap ranking on survivors (reduced draws)
             boot_scores = []
@@ -534,9 +541,16 @@ def main(objective: str = "all"):
                     "daily_pnl": sim["daily_pnl"],
                 })
             boot_df = pd.DataFrame(boot_scores)
-    
-            robust_london = boot_df[boot_df["session"] == "London"].sort_values("boot_weekly_rank", ascending=False).iloc[0]
-            robust_ny = boot_df[boot_df["session"] == "NY"].sort_values("boot_weekly_rank", ascending=False).iloc[0]
+
+            london_df = boot_df[boot_df["session"] == "London"]
+            ny_df = boot_df[boot_df["session"] == "NY"]
+            if london_df.empty or ny_df.empty:
+                raise RuntimeError(
+                    f"Robustness selection needs both London and NY candidates, got "
+                    f"London={len(london_df)} NY={len(ny_df)} (scored_df sessions: {scored_df['session'].unique().tolist()})"
+                )
+            robust_london = london_df.sort_values("boot_weekly_rank", ascending=False).iloc[0]
+            robust_ny = ny_df.sort_values("boot_weekly_rank", ascending=False).iloc[0]
     
             combined = pd.concat([robust_london["trades"], robust_ny["trades"]], ignore_index=True)
             combined["pnl"] = combined["pnl"] * max_contracts
@@ -586,8 +600,15 @@ def main(objective: str = "all"):
             if eval_cands.empty:
                 eval_cands = eval_df.copy()
 
-            eval_london = eval_cands[eval_cands["session"] == "London"].sort_values(["eval_days", "eval_pass_rate"], ascending=[True, False]).iloc[0]
-            eval_ny = eval_cands[eval_cands["session"] == "NY"].sort_values(["eval_days", "eval_pass_rate"], ascending=[True, False]).iloc[0]
+            london_df = eval_cands[eval_cands["session"] == "London"]
+            ny_df = eval_cands[eval_cands["session"] == "NY"]
+            if london_df.empty or ny_df.empty:
+                raise RuntimeError(
+                    f"Eval contract sweep needs both London and NY candidates, got "
+                    f"London={len(london_df)} NY={len(ny_df)} (scored_df sessions: {scored_df['session'].unique().tolist()})"
+                )
+            eval_london = london_df.sort_values(["eval_days", "eval_pass_rate"], ascending=[True, False]).iloc[0]
+            eval_ny = ny_df.sort_values(["eval_days", "eval_pass_rate"], ascending=[True, False]).iloc[0]
 
             combined = pd.concat([eval_london["trades"], eval_ny["trades"]], ignore_index=True)
             combined["pnl"] = combined["pnl"] * contracts
