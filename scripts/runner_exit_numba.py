@@ -8,8 +8,16 @@
 #     across the entire backtest history.
 #   - Added local_day array to the simulation cache and passed it into the
 #     JIT kernel so calendar-day boundaries are visible to the runner.
-# WHY: The seconds-since-midnight time check could not distinguish days, so
-#      a missing day_end caused trades to be carried for years.
+# 2026-08-27  kilo
+#   - Added breakeven_then_trail mode: once TP is hit, stop moves to entry
+#     price, then trails by trail_mult*ATR.
+#   - Added baseline mode mapping so signals exit at TP/SL/session end with
+#     no runner.
+#   - Passed entry_price into the JIT kernel so the breakeven floor can be
+#     enforced exactly.
+# WHY: The 150k standard sweep was crashing because the pre-filter selected
+#      breakeven_0.5x / breakeven_1.0x candidates, which were not supported
+#      by the runner mapping. The new modes unblock those high-payout configs.
 
 """Numba-accelerated runner exit simulation (per-trade JIT loop)."""
 from __future__ import annotations
@@ -69,9 +77,10 @@ if njit is not None:
         local_day: np.ndarray,
         entry_idx: int,
         direction: int,
+        entry_price: float,
         stop_loss: float,
         take_profit: float,
-        mode: int,  # 0=trail, 1=hold_day, 2=hold_session
+        mode: int,  # 0=trail, 1=hold_day, 2=hold_session, 3=breakeven_then_trail, 4=baseline
         trail_mult: float,
         session_end_sec: int,
         day_end_sec: int,
@@ -119,19 +128,29 @@ if njit is not None:
                 if sl_hit and stop_first:
                     return i, sl, 0  # sl
 
+                # Baseline mode: take profit and exit immediately.
+                if mode == 4:
+                    return i, tp, 1  # tp
+
                 # Runner phase starts on the next bar.
                 runner_start = i + 1
                 if runner_start >= loop_end:
                     # TP was hit on the last bar of the entry day; close at TP.
                     return i, tp, 1  # tp
 
-                runner_stop = tp
+                # Breakeven floor: once TP is touched, stop cannot move
+                # back past the entry price. Then trail by trail_mult*ATR.
+                if mode == 3:
+                    runner_stop = entry_price
+                else:
+                    runner_stop = tp
+
                 for j in range(runner_start, loop_end):
-                    if mode == 2 and local_time_s[j] >= session_end_sec:
+                    if mode in (2, 3) and local_time_s[j] >= session_end_sec:
                         return j, float(close[j]), 2  # session_end
                     if mode == 1 and local_time_s[j] >= day_end_sec:
                         return j, float(close[j]), 3  # day_end
-                    if mode == 0:
+                    if mode in (0, 3):
                         if d == 1:
                             cand = high[j] - trail_mult * atr[j]
                             if cand > runner_stop:
@@ -199,7 +218,13 @@ def apply_runner_to_signals(
     ts = ts.values
     entry_idx = np.searchsorted(index, ts)
 
-    mode_code = {"trail": 0, "hold_day": 1, "hold_session": 2}[mode]
+    mode_code = {
+        "trail": 0,
+        "hold_day": 1,
+        "hold_session": 2,
+        "breakeven_then_trail": 3,
+        "baseline": 4,
+    }[mode]
     session_end_sec = _time_to_seconds(session_end_time)
     day_end_sec = _time_to_seconds(day_end_time)
 
@@ -230,6 +255,7 @@ def apply_runner_to_signals(
             ld_arr,
             int(ei),
             int(signals["direction"].iat[t]),
+            float(signals["entry_price"].iat[t]),
             float(signals["stop_loss"].iat[t]),
             float(signals["take_profit"].iat[t]),
             mode_code,
