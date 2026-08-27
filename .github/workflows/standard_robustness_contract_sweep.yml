@@ -2,6 +2,16 @@ name: Standard Robustness Contract Sweep
 
 on:
   workflow_dispatch:
+    inputs:
+      account:
+        description: "Account spec to sweep (or all)"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - "all"
+          - "50k_standard"
+          - "150k_standard"
 
 permissions:
   contents: write
@@ -9,6 +19,7 @@ permissions:
 jobs:
   sweep:
     runs-on: ubuntu-latest
+    if: ${{ inputs.account == 'all' || inputs.account == matrix.account }}
     strategy:
       fail-fast: false
       matrix:
