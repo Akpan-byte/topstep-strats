@@ -486,7 +486,7 @@ def main(objective: str = "all"):
         # Pre-generate trades and raw-score every strategy with max_contracts
         print("[main] raw-scoring all strategies...")
         row_dicts = base.to_dict("records")
-        workers = min(4, os.cpu_count() or 1)
+        workers = min(2, os.cpu_count() or 1)
         tasks = [(row, spec, max_contracts) for row in row_dicts]
         scored: List[Dict[str, Any]] = []
         with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker, initargs=(DATA_DIR,)) as pool:
