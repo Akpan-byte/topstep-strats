@@ -1,0 +1,93 @@
+name: Ten Year Matrix Quant Sweep
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Fetch ES/NQ/YM market data (data-v2.0 parquet)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p data
+          gh release download data-v2.0 --repo ${{ github.repository }} \
+            --pattern 'ES_1min.parquet' \
+            --pattern 'NQ_1min.parquet' \
+            --pattern 'YM_1min.parquet' \
+            --dir data/
+          test -f data/NQ_1min.parquet
+          test -f data/ES_1min.parquet
+          test -f data/YM_1min.parquet
+
+      - name: Run 10-year quant sweep shard
+        run: |
+          python scripts/run_gh_matrix_shard.py \
+            --shard ${{ matrix.shard }} \
+            --total-shards 20 \
+            --output results_shard_${{ matrix.shard }}.jsonl
+
+      - name: Upload shard result artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.shard }}-results
+          path: results_shard_${{ matrix.shard }}.jsonl
+          if-no-files-found: error
+
+  aggregate:
+    needs: sweep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download all shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: "shard-*-results"
+          merge-multiple: true
+
+      - name: Aggregate sweep results & build master leaderboard
+        run: |
+          python scripts/aggregate_gh_sweep.py
+
+      - name: Upload 10-year master sweep report
+        uses: actions/upload-artifact@v4
+        with:
+          name: 10yr-sweep-master-report
+          path: |
+            MASTER_10YR_SWEEP_RESULTS.json
+            MASTER_10YR_SWEEP_LEADERBOARD.md
+          if-no-files-found: error

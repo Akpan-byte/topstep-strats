@@ -39,7 +39,7 @@ TOPSTEP_SPECS: dict[str, dict[str, Any]] = {
         "max_contracts": 2,
         "payout_cap": 4000,
         "min_winning_days": 5,
-        "consistency_rule": True,
+        "consistency_rule": False,
         "payout_pct_of_balance": 0.40,
         "initial_capital": 50000,
     },
@@ -56,18 +56,18 @@ TOPSTEP_SPECS: dict[str, dict[str, Any]] = {
     },
     "150k_standard": {
         "profit_target": 9000,
-        "daily_dd": 2000,
+        "daily_dd": 3500,
         "trailing_dd": 4500,
         "max_contracts": 3,
         "payout_cap": 10000,
         "min_winning_days": 5,
-        "consistency_rule": True,
+        "consistency_rule": False,
         "payout_pct_of_balance": 0.40,
         "initial_capital": 150000,
     },
     "150k_consistency": {
         "profit_target": 9000,
-        "daily_dd": 2000,
+        "daily_dd": 3500,
         "trailing_dd": 4500,
         "max_contracts": 3,
         "payout_cap": 12000,
@@ -229,6 +229,7 @@ def simulate_topstep_payouts(
     consistency_violations_total = 0
     winning_days_total = 0
     total_payouts_dollars = 0.0
+    payout_amounts: list[float] = []
 
     trades_executed = 0
     winning_trades = 0
@@ -262,13 +263,25 @@ def simulate_topstep_payouts(
         nonlocal cash, high_water, daily_start, daily_pnl, total_pnl_combine
         nonlocal winning_days_current, winning_days_total
         nonlocal consistency_violations_total
-        nonlocal total_payouts_dollars, payouts_count, resets
+        nonlocal total_payouts_dollars, payouts_count, resets, failed_combines
 
         if daily_pnl > 0:
             winning_days_current += 1
             winning_days_total += 1
 
         day_pnl_current[day] = daily_pnl
+
+        # EOD max loss limit check (fixed from initial capital, NOT trailing)
+        if cash < initial_capital - trailing_dd:
+            resets += 1
+            failed_combines += 1
+            _reset_account()
+            daily_equity[day] = cash
+            return
+
+        # Update high water mark at EOD (after DD check)
+        if cash > high_water:
+            high_water = cash
 
         # Payout eligibility
         if (
@@ -278,6 +291,7 @@ def simulate_topstep_payouts(
         ):
             withdrawal = min(cash * payout_pct, payout_cap)
             total_payouts_dollars += withdrawal
+            payout_amounts.append(withdrawal)
             cash -= withdrawal
             payouts_count += 1
             resets += 1
@@ -304,19 +318,28 @@ def simulate_topstep_payouts(
                 _finalize_day(prev_day)
             daily_start = cash
             daily_pnl = 0.0
+            daily_cap_hit = False
             prev_day = day
 
         trade_net = float(row.net_pnl)
 
-        # Daily profit cap
-        if daily_profit_cap_mode and daily_pnl + trade_net > profit_target * 0.25:
-            profit_cap_blocks += 1
-            continue
-
-        # Daily drawdown limit
+        # Daily drawdown limit (pause for the day, does NOT blow account)
         if cash + trade_net < daily_start - daily_dd:
             daily_limit_hits += 1
             continue
+
+        # Hard daily profit cap: if winning trade would push daily_pnl
+        # above 40% of payout cap, truncate profit at the cap and stop
+        if daily_profit_cap_mode and consistency_rule:
+            daily_cap = payout_cap * 0.4
+            if trade_net > 0 and daily_pnl + trade_net > daily_cap:
+                trade_net = daily_cap - daily_pnl
+                profit_cap_blocks += 1
+                daily_cap_hit = True
+            elif trade_net <= 0 and daily_pnl + trade_net < -daily_cap:
+                trade_net = -daily_cap - daily_pnl
+                profit_cap_blocks += 1
+                daily_cap_hit = True
 
         # Execute trade
         cash += trade_net
@@ -329,18 +352,13 @@ def simulate_topstep_payouts(
         if trade_net > 0:
             winning_trades += 1
 
-        if cash > high_water:
-            high_water = cash
-
         dd_pct = (high_water - cash) / high_water if high_water > 0 else 0.0
         if dd_pct > max_drawdown_pct:
             max_drawdown_pct = dd_pct
 
-        # Trailing drawdown -> reset (buy a new combine)
-        if cash < high_water - trailing_dd:
-            resets += 1
-            failed_combines += 1
-            _reset_account()
+        # After executing capped trade, skip rest of day
+        if daily_profit_cap_mode and daily_cap_hit:
+            continue
 
     # Finalize last day
     if prev_day is not None:
@@ -371,6 +389,7 @@ def simulate_topstep_payouts(
         "winning_days": winning_days_total,
         "consistency_violations": consistency_violations_total,
         "payouts_count": payouts_count,
+        "payout_amounts": payout_amounts,
         "final_equity": cash,
         "trades_executed": trades_executed,
         "win_rate": (winning_trades / trades_executed * 100.0) if trades_executed > 0 else 0.0,
