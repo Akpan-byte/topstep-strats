@@ -1,0 +1,72 @@
+name: IG Reel Frame-by-Frame Vision Extractor
+
+on:
+  workflow_dispatch:
+    inputs:
+      num_shards:
+        description: "Parallel matrix workers (max 20)"
+        required: false
+        default: "20"
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg, rclone, and Python vision/ASR stack
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg rclone
+          pip install -q yt-dlp gallery-dl faster-whisper pillow numpy
+
+      - name: Decode secrets (ephemeral runner only)
+        run: |
+          echo "${{ secrets.IG_COOKIES_B64 }}" | base64 -d > /tmp/ig_cookies.txt
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONF_B64 }}" | base64 -d > ~/.config/rclone/rclone.conf
+
+      - name: Sync pre-existing GDrive extractions (resume-safe)
+        run: |
+          mkdir -p out_extractions
+          rclone copy "gdrive:IG_Reels_Vision_Extracted/" out_extractions/ --transfers 8 --checkers 16 || true
+
+      - name: Run shard extraction (Audio + 35s Chunked Chart Vision)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          HF_HUB_DISABLE_SYMLINKS: "1"
+        run: |
+          python3 scripts/extract_ig_reel_vision.py \
+            --queue data/ig_reels_new_queue.json \
+            --out-dir out_extractions \
+            --cookies /tmp/ig_cookies.txt \
+            --shard ${{ matrix.shard }} \
+            --num-shards ${{ github.event.inputs.num_shards || '20' }}
+
+      - name: Push extracted specs & transcripts to Google Drive
+        run: |
+          rclone copy out_extractions/ "gdrive:IG_Reels_Vision_Extracted/" --transfers 8 --checkers 16
+
+      - name: Upload GitHub Artifact (Backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ig-extractions-shard-${{ matrix.shard }}
+          path: out_extractions/
+          retention-days: 14
+
+      - name: Scrub ephemeral secrets
+        if: always()
+        run: |
+          rm -f /tmp/ig_cookies.txt ~/.config/rclone/rclone.conf

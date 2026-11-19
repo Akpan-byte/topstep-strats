@@ -1,0 +1,548 @@
+[
+  {
+    "idx": 1,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DYTCcIcuF7u/?stkn=ZmZ2amhiOWliNXJ2",
+    "note": "test this one on its own but also see if using it  as a confluence for orbv5 improves it"
+  },
+  {
+    "idx": 2,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Dd714BxuQAR/?stkn=aGJwdmxmMGdjZTI=",
+    "note": ""
+  },
+  {
+    "idx": 3,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DdhbNwUSwLz/?stkn=MTk0ZnJheGRyemFpNA==",
+    "note": ""
+  },
+  {
+    "idx": 4,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Dd6cL9lS1zN/?stkn=eXJmYXcxeWdycXNs",
+    "note": ""
+  },
+  {
+    "idx": 5,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DdIZVOwMyvB/?stkn=ZW5maHFkMTF3M2Fj",
+    "note": ""
+  },
+  {
+    "idx": 6,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DdepcZfNgJm/?stkn=MThnMmZpcGxrajRyag==",
+    "note": ""
+  },
+  {
+    "idx": 7,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DduW3LOAiqC/?stkn=NmhrMGg3OGVsZXBm",
+    "note": ""
+  },
+  {
+    "idx": 8,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DdsELscCg7d/?stkn=b2RyOXBycTVtcmoz",
+    "note": ""
+  },
+  {
+    "idx": 9,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Dduja_Hx5Nx/?stkn=MWJ3cm83YTN1bHRteQ==",
+    "note": ""
+  },
+  {
+    "idx": 10,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Dd9-ogRsh_W/?stkn=eGdrc3J3aGF4dzNx",
+    "note": ""
+  },
+  {
+    "idx": 11,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeAg67yTPsx/?stkn=MzM4dDFrM2V0a3R5",
+    "note": ""
+  },
+  {
+    "idx": 12,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeAVbxnJRXO/?stkn=MTJzY3A0ZjM2bmh1OQ==",
+    "note": ""
+  },
+  {
+    "idx": 13,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeAdYpzP4Ve/?stkn=ZzJrNGRyajRhOWQ3",
+    "note": ""
+  },
+  {
+    "idx": 14,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeAo_Fxiasp/?stkn=MWdlcTZzNWVsMmRjZQ==",
+    "note": ""
+  },
+  {
+    "idx": 15,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeDTS2PI3Yt/?stkn=cmp5aXU1NHR4OW1x",
+    "note": ""
+  },
+  {
+    "idx": 16,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DbcfMyEz-WR/?stkn=azVwampjcHJiMGlm",
+    "note": ""
+  },
+  {
+    "idx": 17,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeESZFYRXn1/?stkn=cXRxdWN3MHA3MWxt",
+    "note": ""
+  },
+  {
+    "idx": 18,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeAygdjsYtQ/?stkn=MXVlbzhxNW5zbTl1NQ==",
+    "note": ""
+  },
+  {
+    "idx": 19,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeCAiUbgbdg/?stkn=MTJ6eTVpM3I5cGI1",
+    "note": ""
+  },
+  {
+    "idx": 20,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Dd9p_NzS2pl/?stkn=MTBjdTE3YmdmeTd1Ng==",
+    "note": ""
+  },
+  {
+    "idx": 21,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DddNi7kuCek/?stkn=N3cxaTI0OGlqYjY5",
+    "note": ""
+  },
+  {
+    "idx": 22,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeHv037uvlD/?stkn=cDhxcDYyb3hnbmh",
+    "note": ""
+  },
+  {
+    "idx": 23,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeGgi9whuDy/?stkn=MW00Zm9vY3A3bDZucg==",
+    "note": ""
+  },
+  {
+    "idx": 24,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeIhVlFiUkU/?stkn=dTZjYXBsaWlkbTZm",
+    "note": ""
+  },
+  {
+    "idx": 25,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeKGZEiAoSo/?stkn=NzZhZGo2N3c2Ynk3",
+    "note": "session switch strat hopefully that one works very well"
+  },
+  {
+    "idx": 26,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeIyNskR1Wo/?stkn=bDh5NnRld204anA3",
+    "note": ""
+  },
+  {
+    "idx": 27,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DbQkSctSgAU/?stkn=b2Jmc202bG43cjhr",
+    "note": ""
+  },
+  {
+    "idx": 28,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Db6xoS2N-Xf/?stkn=eno3cjhtejVhejFi",
+    "note": ""
+  },
+  {
+    "idx": 29,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeGOdEHt-av/?stkn=MW5henFmMHlpa3A1aA==",
+    "note": ""
+  },
+  {
+    "idx": 30,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeK7_O7Sv-7/?stkn=MTZwYnlyOTR0OG93ag==",
+    "note": ""
+  },
+  {
+    "idx": 31,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeNOJGuBMp8/?stkn=MW1nOW9sd3dhMTVjcQ==",
+    "note": ""
+  },
+  {
+    "idx": 32,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Dd0y9HUpOYr/?xtok=MWExNHphMWQ3enlrNA==",
+    "note": "this one previous is more like five different strats so need to do them individually and then those 5 together see where the bottleneck is if there is potential"
+  },
+  {
+    "idx": 33,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeWsJBsA6cv/?xtok=cnc4MWRlZHB1Yms1",
+    "note": ""
+  },
+  {
+    "idx": 34,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DedXH5Uo4Tt/?mdxt=b3NhcndkeThvandh",
+    "note": ""
+  },
+  {
+    "idx": 35,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Deew3R6gBeL/?dlrf=MWowcWgzdDA0dmcxdg==",
+    "note": ""
+  },
+  {
+    "idx": 36,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DefGsR2RkOy/?xtok=dWczbmY0bnFtcml2",
+    "note": ""
+  },
+  {
+    "idx": 37,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DefdpOLAsEa/?psln=NTFhMDJwMG4zYnA1",
+    "note": ""
+  },
+  {
+    "idx": 38,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeiBnQighr8/?dlrf=MXRsYTV0bGNxemFyeA==",
+    "note": ""
+  },
+  {
+    "idx": 39,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeR0FBUsljG/?rpxt=bDN0bWt1ZW0xNG0x",
+    "note": ""
+  },
+  {
+    "idx": 40,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DehQ042tRD5/?obrf=MTlpbjJ1czJvNmxjZg==",
+    "note": ""
+  },
+  {
+    "idx": 41,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Dei4ofxKOkL/?srtk=bDF3ZzRhN2F5MDRz",
+    "note": ""
+  },
+  {
+    "idx": 42,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DejXrbqtkkD/?exln=enN3NGNncmQ1Mmtq",
+    "note": ""
+  },
+  {
+    "idx": 43,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DekdH7XB330/?dlrf=cnN0NmNwdnRlZ3Rh",
+    "note": ""
+  },
+  {
+    "idx": 44,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DcRGOOfhyUu/?psln=MWZ2dTFnYTV5ZmptcA==",
+    "note": ""
+  },
+  {
+    "idx": 45,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DekUkYexZaK/?mdxt=MTg2bGhpMnZpZnFmdw==",
+    "note": ""
+  },
+  {
+    "idx": 46,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DecxaiGtJnt/?vrfl=NHRrd2h4N2kzM3Mz",
+    "note": ""
+  },
+  {
+    "idx": 47,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DekDXtWSi2c/?dlrf=YjM1c3N4N3BteGly",
+    "note": ""
+  },
+  {
+    "idx": 48,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Dem_Z2cNrfh/?exln=MTN6OHRyNjNlYmV6bA==",
+    "note": ""
+  },
+  {
+    "idx": 49,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Dedn4uNNuyK/?srtk=dW5wcmJ4OGU1a200",
+    "note": ""
+  },
+  {
+    "idx": 50,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DecWxD0g6-r/?obrf=cGxpeWk4ejBwdHl3",
+    "note": "test both types for the epb thing together and separately"
+  },
+  {
+    "idx": 51,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Dej5a4OoIcF/?cplk=anBnaXBxbnd2cWt3",
+    "note": ""
+  },
+  {
+    "idx": 52,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeqM-LllOsu/?srtk=MTU2MGYwaXlrMW55",
+    "note": ""
+  },
+  {
+    "idx": 53,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Dejm0vrMHjc/?exln=MWY5cWh2eGRxczVubQ==",
+    "note": ""
+  },
+  {
+    "idx": 54,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DZrDGx9tzMq/?cplk=MWJ5MGc3bDdxbms4Ng==",
+    "note": ""
+  },
+  {
+    "idx": 55,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DbSpUsCO7Jn/?exln=MThzZW5kaXFua250NQ==",
+    "note": ""
+  },
+  {
+    "idx": 56,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DesUk2xhDGH/?srtk=MWR2ajV4Z3FlZ2g1ag==",
+    "note": ""
+  },
+  {
+    "idx": 57,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DekdURtkfco/?obrf=c3Jrd21jazd0dWV3",
+    "note": ""
+  },
+  {
+    "idx": 58,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Deu1yMPAWz5/?srtk=MWd0dXZ0c3N1MHlxcw==",
+    "note": ""
+  },
+  {
+    "idx": 59,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeuDlUszkL8/?exln=MWo2eHdlcWZjZTg5OQ==",
+    "note": ""
+  },
+  {
+    "idx": 60,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeuwNdCzPEs/?vrfl=MXYwOXRuNmRwZjE0MA==",
+    "note": "this and previous reel from the same creator seems that it can be used as a good way to filter out losing trades for any of the other strats even though it's not a strat in itself"
+  },
+  {
+    "idx": 61,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Deu7J2YvDen/?vrfl=NDQ5cGVkOGZodnk2",
+    "note": ""
+  },
+  {
+    "idx": 62,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DepUx5Fp2rl/?exln=ZzFwZGV0cTlobnNu",
+    "note": ""
+  },
+  {
+    "idx": 63,
+    "kind": "ig_post",
+    "url": "https://www.instagram.com/p/DetWSY5DXy_/?obrf=bHhibjBkeXAzZWIz",
+    "note": ""
+  },
+  {
+    "idx": 64,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeyGTGyILby/?vrfl=MTloYW4xd2kyNG0ydw==",
+    "note": ""
+  },
+  {
+    "idx": 65,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DevOs-stFBh/?xtok=cXh3M2FzcmRlbnpv",
+    "note": ""
+  },
+  {
+    "idx": 66,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DezNYoKNN2g/?rpxt=dmJwd2V5NTNzZ3E4",
+    "note": ""
+  },
+  {
+    "idx": 67,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/De1mGvltFqZ/?xtok=ZGlhcjViZ2RhMGsz",
+    "note": ""
+  },
+  {
+    "idx": 68,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/De1TEFSjOd-/?srtk=MWZyN2JtNzJkc3JvdQ==",
+    "note": ""
+  },
+  {
+    "idx": 69,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/De5LrCnAzL9/?psln=MWRnZHVkbXB2NXd5NA==",
+    "note": ""
+  },
+  {
+    "idx": 70,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/De6nfKVielt/?xtok=dDJiNzB5czZ4b2c4",
+    "note": ""
+  },
+  {
+    "idx": 71,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DeXrGH6PYzx/?xtok=MXR1ZTdvN2gzaGZyZQ==",
+    "note": ""
+  },
+  {
+    "idx": 72,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DfFkkM5z7Mm/?srtk=a3o3bGZ0YWJ4Nzlr",
+    "note": ""
+  },
+  {
+    "idx": 73,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Ddc_9GFtiHm/?srtk=MXQzMmpqanp6enFoMg==",
+    "note": ""
+  },
+  {
+    "idx": 74,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DZp0mfgRIWj/?srtk=MWhhd25zaWZocHAxdg==",
+    "note": ""
+  },
+  {
+    "idx": 75,
+    "kind": "fb_reel",
+    "url": "https://www.facebook.com/share/r/1PVWzGKrK6/?mibextid=wwXIfr",
+    "note": ""
+  },
+  {
+    "idx": 76,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DfXnCgJzq2B/?rpxt=MXNmMnFnYmp5cmdubA==",
+    "note": ""
+  },
+  {
+    "idx": 77,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Dfb_fvghTz8/?psln=NjZkNDM0ODIxYWhp",
+    "note": ""
+  },
+  {
+    "idx": 78,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Dfegu6rh9RJ/?exln=MTh0cmw4ZmJwMW91Nw==",
+    "note": ""
+  },
+  {
+    "idx": 79,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DfegftOBn8t/?cplk=MXI4d3huZno3MTAzZg==",
+    "note": ""
+  },
+  {
+    "idx": 80,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DfYnKt5NfS-/?rpxt=ZTY1cWtsYWZnNjh5",
+    "note": ""
+  },
+  {
+    "idx": 81,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DfgRJ9aNNeo/?vrfl=cnQ5aHQzZjgwYXQ1",
+    "note": ""
+  },
+  {
+    "idx": 82,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Dffg3wDIzxR/?rpxt=ejV6amlhdndsdWo4",
+    "note": ""
+  },
+  {
+    "idx": 83,
+    "kind": "fb_reel",
+    "url": "https://www.facebook.com/share/r/1D1wPQhVGN/?mibextid=wwXIfr",
+    "note": ""
+  },
+  {
+    "idx": 84,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DfsndKMTiVV/?dlrf=MWJkcXJ0MnozdHh1eA==",
+    "note": ""
+  },
+  {
+    "idx": 85,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DfNIZGlAF_c/?psln=aXE4cHdpamI4NmZ0",
+    "note": ""
+  },
+  {
+    "idx": 86,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DfuwA3eT4wm/?xtok=NGluYjkzNzgyYTk3",
+    "note": ""
+  },
+  {
+    "idx": 87,
+    "kind": "ig_post",
+    "url": "https://www.instagram.com/p/DfP5vCwjQMR/?mdxt=dTdna2Z1bHFsd2Zp",
+    "note": ""
+  },
+  {
+    "idx": 88,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Df2XgJHT41y/?dlrf=MXZkMG0wbTg4MWQ2MA==",
+    "note": ""
+  },
+  {
+    "idx": 89,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/DfsDSnPAbT4/?knvt=NXFzcHpoeGlpZWRy",
+    "note": ""
+  },
+  {
+    "idx": 90,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Df6RujzI8sI/?bqrl=MXE3cWh4NHc1M3h1dQ==",
+    "note": ""
+  },
+  {
+    "idx": 91,
+    "kind": "ig_reel",
+    "url": "https://www.instagram.com/reel/Df5Mj_4Asz7/?avpt=Zmd3OG95ZGo4MXV6",
+    "note": ""
+  }
+]
