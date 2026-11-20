@@ -178,13 +178,14 @@ int main(int argc, char** argv) {
         cfg.name = c.uid + "_" + c.asset + "_SW" + std::to_string(c.switch_mode);
         cfg.inst = sp;
         cfg.contracts_micros = 5;
-        cfg.dsr_num_trials = std::max(1, sw.evaluated_combos);
+        cfg.dsr_num_trials = std::max(1, sw.total_trials_evaluated);
         cfg.run_rolling_combines = true;
         cfg.run_full_11_stages = true;
         cfg.ref_nq = &md_nq; cfg.ref_es = &md_es; cfg.ref_ym = &md_ym;
         for (int s = 0; s < 4; ++s) cfg.allow_session[s] = ((c.sess_mask >> s) & 1) != 0;
 
         Universal11StageResult best_res = run_chunked_parallel_11stage(md, best_pl, cfg);
+        apply_sp500_benchmark(best_res, sp500, 50000.0);
 
         std::string pstr;
         for (size_t k = 0; k < best_params.size(); ++k) {
@@ -193,16 +194,16 @@ int main(int argc, char** argv) {
         }
 
         std::cout << "[Cert " << i << "] " << c.uid << " (" << c.asset << ") -> "
-                  << best_res.inst_class.tier << " | PF=" << best_res.profit_factor
-                  << " | M_safe=" << best_res.recommended_m_safe
+                  << best_res.inst.tier << " | PF=" << best_res.profit_factor
+                  << " | M_safe=" << best_res.m_safe_micros
                   << " | Pass=" << best_res.combine_m_safe.pass_rate_pct << "%\n" << std::flush;
 
         fout << c.uid << "," << c.asset << "," << c.sess_mask << "," << c.switch_mode << ","
              << best_res.total_trades << "," << best_res.win_rate_pct << "," << best_res.profit_factor << ","
              << best_res.net_pnl_5m << "," << best_res.curve_max_dd_5m << ","
-             << best_res.recommended_m_safe << "," << best_res.net_pnl_m_safe << "," << best_res.curve_max_dd_m_safe << ","
+             << best_res.m_safe_micros << "," << best_res.net_pnl_m_safe << "," << best_res.curve_max_dd_m_safe << ","
              << best_res.combine_m_safe.pass_rate_pct << "," << best_res.combine_m_safe.ttp.p50 << ","
-             << best_res.inst_class.breakeven_slip_pts << "," << best_res.inst_class.tier << ",\"" << pstr << "\"\n";
+             << best_res.inst.breakeven_slip_pts << "," << best_res.inst.tier << ",\"" << pstr << "\"\n";
     }
     return 0;
 }
