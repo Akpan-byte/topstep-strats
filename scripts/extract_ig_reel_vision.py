@@ -181,7 +181,7 @@ def extract_frames_dedup(video_path: Path, workdir: Path):
 
 
 def call_gemini(api_key: str, parts: list, temperature: float = 0.1):
-    models = ["gemini-2.5-flash", "gemini-2.0-flash"]
+    models = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-2.5-flash-lite"]
     payload = json.dumps({
         "contents": [{"parts": parts}],
         "generationConfig": {"temperature": temperature, "maxOutputTokens": 4096}
@@ -190,7 +190,7 @@ def call_gemini(api_key: str, parts: list, temperature: float = 0.1):
     last_err = ""
     for m in models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={api_key}"
-        for attempt in range(4):
+        for attempt in range(5):
             req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
             try:
                 with urllib.request.urlopen(req, timeout=120) as resp:
@@ -200,12 +200,12 @@ def call_gemini(api_key: str, parts: list, temperature: float = 0.1):
                 body = e.read().decode("utf-8", "ignore")
                 last_err = f"{m} HTTP {e.code}: {body[:250]}"
                 if e.code in (429, 500, 503):
-                    time.sleep(6 * (attempt + 1) + random.uniform(0, 3))
+                    time.sleep(10 * (attempt + 1) + random.uniform(1, 5))
                     continue
                 break
             except Exception as e:
                 last_err = f"{m} ERR: {e}"
-                time.sleep(5)
+                time.sleep(6)
     raise RuntimeError(f"Gemini API failed: {last_err}")
 
 
@@ -222,6 +222,9 @@ def process_one(item, out_root: Path, cookies_path: Path, api_key: str):
     if (item_out / "strategy_spec.json").exists():
         print(f"[{tag}] SKIP (already extracted)", flush=True)
         return True
+    failed_marker = item_out / "FAILED.txt"
+    if failed_marker.exists():
+        failed_marker.unlink()
 
     work = Path(f"/tmp/work_{tag}")
     if work.exists():
