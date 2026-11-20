@@ -180,11 +180,14 @@ def extract_frames_dedup(video_path: Path, workdir: Path):
     return kept
 
 
-def call_gemini(api_key: str, parts: list, temperature: float = 0.1):
+def call_gemini(api_key: str, parts: list, temperature: float = 0.1, json_mode: bool = False):
     models = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-2.5-flash-lite"]
+    gen_cfg = {"temperature": temperature, "maxOutputTokens": 8192}
+    if json_mode:
+        gen_cfg["responseMimeType"] = "application/json"
     payload = json.dumps({
         "contents": [{"parts": parts}],
-        "generationConfig": {"temperature": temperature, "maxOutputTokens": 4096}
+        "generationConfig": gen_cfg
     }).encode("utf-8")
 
     last_err = ""
@@ -219,9 +222,14 @@ def process_one(item, out_root: Path, cookies_path: Path, api_key: str):
     code = extract_code(item["url"])
     tag = f"{item['idx']:03d}_{code}"
     item_out = out_root / tag
-    if (item_out / "strategy_spec.json").exists():
-        print(f"[{tag}] SKIP (already extracted)", flush=True)
-        return True
+    spec_file = item_out / "strategy_spec.json"
+    if spec_file.exists():
+        try:
+            if not json.loads(spec_file.read_text()).get("parse_error"):
+                print(f"[{tag}] SKIP (already extracted)", flush=True)
+                return True
+        except Exception:
+            pass
     failed_marker = item_out / "FAILED.txt"
     if failed_marker.exists():
         failed_marker.unlink()
@@ -233,55 +241,62 @@ def process_one(item, out_root: Path, cookies_path: Path, api_key: str):
     item_out.mkdir(parents=True, exist_ok=True)
 
     try:
-        video_path, image_paths, meta = download_media(item, work, cookies_path)
-        if video_path is None and not image_paths:
-            (item_out / "FAILED.txt").write_text(f"Download failed for {item['url']}\n")
-            print(f"[{tag}] FAILED download", flush=True)
-            return False
-
-        segs, transcript_txt = ([], "")
-        frames = []
-        if video_path is not None:
-            segs, transcript_txt = transcribe_audio(video_path, work)
-            frames = extract_frames_dedup(video_path, work)
+        chunks_path = item_out / "chunks_vision.json"
+        if chunks_path.exists() and (item_out / "transcript.txt").exists() and (item_out / "meta.json").exists():
+            chunks_obs = json.loads(chunks_path.read_text())
+            transcript_txt = (item_out / "transcript.txt").read_text().strip()
+            meta = json.loads((item_out / "meta.json").read_text())
+            frames = []
         else:
-            frames = [(i * 5, p) for i, p in enumerate(image_paths)]
-            transcript_txt = "(Image carousel post - visual slides only)"
+            video_path, image_paths, meta = download_media(item, work, cookies_path)
+            if video_path is None and not image_paths:
+                (item_out / "FAILED.txt").write_text(f"Download failed for {item['url']}\n")
+                print(f"[{tag}] FAILED download", flush=True)
+                return False
 
-        (item_out / "transcript.txt").write_text(transcript_txt + "\n")
-        (item_out / "meta.json").write_text(json.dumps({**meta, "user_note": item.get("note", "")}, indent=2))
+            segs, transcript_txt = ([], "")
+            frames = []
+            if video_path is not None:
+                segs, transcript_txt = transcribe_audio(video_path, work)
+                frames = extract_frames_dedup(video_path, work)
+            else:
+                frames = [(i * 5, p) for i, p in enumerate(image_paths)]
+                transcript_txt = "(Image carousel post - visual slides only)"
 
-        # Chunk frames every 35s with 5s overlap (<= 16 frames per Vision call)
-        max_t = frames[-1][0] if frames else 0
-        win = 35
-        step = 30
-        chunks_obs = []
-        t0 = 0
-        chunk_idx = 0
-        while t0 <= max_t or chunk_idx == 0:
-            t1 = t0 + win
-            c_frames = [(t, fp) for (t, fp) in frames if t0 <= t <= t1]
-            if len(c_frames) > 16:
-                stride = len(c_frames) / 16.0
-                c_frames = [c_frames[int(i * stride)] for i in range(16)]
-            c_segs = [f"[{s['start']:05.1f}s - {s['end']:05.1f}s] {s['text']}"
-                      for s in segs if s["end"] >= max(0, t0 - 2) and s["start"] <= t1 + 2]
-            seg_txt = "\n".join(c_segs) if c_segs else "(No speech in this window)"
+            (item_out / "transcript.txt").write_text(transcript_txt + "\n")
+            (item_out / "meta.json").write_text(json.dumps({**meta, "user_note": item.get("note", "")}, indent=2))
 
-            parts = [{"text": QUANT_CHUNK_SYSTEM_PROMPT + f"\n\n=== WINDOW {chunk_idx+1}: {t0}s to {t1}s ===\nTranscript slice:\n{seg_txt}\n\nUser note for this reel: {item.get('note', 'None')}\nFrames attached below in chronological order:"}]
-            for t, fp in c_frames:
-                parts.append({"text": f"[Frame @ t={t}s]"})
-                parts.append(img_part(fp))
+            # Chunk frames every 35s with 5s overlap (<= 16 frames per Vision call)
+            max_t = frames[-1][0] if frames else 0
+            win = 35
+            step = 30
+            chunks_obs = []
+            t0 = 0
+            chunk_idx = 0
+            while t0 <= max_t or chunk_idx == 0:
+                t1 = t0 + win
+                c_frames = [(t, fp) for (t, fp) in frames if t0 <= t <= t1]
+                if len(c_frames) > 16:
+                    stride = len(c_frames) / 16.0
+                    c_frames = [c_frames[int(i * stride)] for i in range(16)]
+                c_segs = [f"[{s['start']:05.1f}s - {s['end']:05.1f}s] {s['text']}"
+                          for s in segs if s["end"] >= max(0, t0 - 2) and s["start"] <= t1 + 2]
+                seg_txt = "\n".join(c_segs) if c_segs else "(No speech in this window)"
 
-            obs = call_gemini(api_key, parts, temperature=0.1)
-            chunks_obs.append({"chunk": chunk_idx + 1, "t0": t0, "t1": t1, "n_frames": len(c_frames), "observation": obs})
-            time.sleep(2.0)
-            chunk_idx += 1
-            if t1 >= max_t:
-                break
-            t0 += step
+                parts = [{"text": QUANT_CHUNK_SYSTEM_PROMPT + f"\n\n=== WINDOW {chunk_idx+1}: {t0}s to {t1}s ===\nTranscript slice:\n{seg_txt}\n\nUser note for this reel: {item.get('note', 'None')}\nFrames attached below in chronological order:"}]
+                for t, fp in c_frames:
+                    parts.append({"text": f"[Frame @ t={t}s]"})
+                    parts.append(img_part(fp))
 
-        (item_out / "chunks_vision.json").write_text(json.dumps(chunks_obs, indent=2))
+                obs = call_gemini(api_key, parts, temperature=0.1)
+                chunks_obs.append({"chunk": chunk_idx + 1, "t0": t0, "t1": t1, "n_frames": len(c_frames), "observation": obs})
+                time.sleep(2.0)
+                chunk_idx += 1
+                if t1 >= max_t:
+                    break
+                t0 += step
+
+            chunks_path.write_text(json.dumps(chunks_obs, indent=2))
 
         # Final Synthesis Pass -> strict JSON + Markdown spec
         chunks_joined = "\n\n".join([f"--- CHUNK {c['chunk']} ({c['t0']}s..{c['t1']}s) ---\n{c['observation']}" for c in chunks_obs])
@@ -292,7 +307,7 @@ def process_one(item, out_root: Path, cookies_path: Path, api_key: str):
             transcript=transcript_txt or "(No speech)",
             chunks_text=chunks_joined
         )
-        raw_json = call_gemini(api_key, [{"text": synth_prompt}], temperature=0.05).strip()
+        raw_json = call_gemini(api_key, [{"text": synth_prompt}], temperature=0.05, json_mode=True).strip()
         raw_json = re.sub(r"^```json\s*|\s*```$", "", raw_json, flags=re.MULTILINE).strip()
         try:
             spec = json.loads(raw_json)
