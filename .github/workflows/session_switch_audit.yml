@@ -1,0 +1,66 @@
+name: Session Switch 647-Strategy Audit (20 Shards)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch 10-year 1m market binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/market_data
+          gh release download data-v3.0-bins --repo ${{ github.repository }} --pattern '*.bin' --dir /tmp/market_data/
+          ls -lh /tmp/market_data/
+
+      - name: Compile and run shard ${{ matrix.shard_id }}/20
+        run: |
+          cd engine_cpp
+          g++ -O3 -std=c++17 -fopenmp run_session_switch_audit.cpp -o run_session_switch_audit
+          mkdir -p /tmp/out
+          ./run_session_switch_audit \
+            --shard-id ${{ matrix.shard_id }} \
+            --num-shards 20 \
+            --data-dir /tmp/market_data \
+            --out-csv /tmp/out/session_switch_shard_${{ matrix.shard_id }}.csv \
+            --out-days /tmp/out/session_switch_days_${{ matrix.shard_id }}.csv
+
+      - name: Upload shard output
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-switch-shard-${{ matrix.shard_id }}
+          path: /tmp/out/
+          if-no-files-found: error
+
+  aggregate:
+    needs: worker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: session-switch-shard-*
+          path: /tmp/shards
+
+      - name: Aggregate and print 4-section report
+        run: |
+          python3 engine_cpp/aggregate_session_switch_audit.py /tmp/shards | tee /tmp/session_switch_report.txt
+
+      - name: Upload final report
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-switch-final-report
+          path: /tmp/session_switch_report.txt
