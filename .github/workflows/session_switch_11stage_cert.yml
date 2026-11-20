@@ -1,0 +1,78 @@
+name: Session Switch 11-Stage Certification (20 Shards)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cert_worker:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch 10-year 1m market binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/market_data
+          gh release download data-v3.0-bins --repo ${{ github.repository }} --pattern '*.bin' --dir /tmp/market_data/
+
+      - name: Compile and certify shard ${{ matrix.shard_id }}/20
+        run: |
+          cd engine_cpp
+          g++ -O3 -std=c++17 -fopenmp run_session_switch_11stage_cert.cpp -o run_cert
+          mkdir -p /tmp/out
+          ./run_cert \
+            --shard-id ${{ matrix.shard_id }} \
+            --num-shards 20 \
+            --data-dir /tmp/market_data \
+            --out-csv /tmp/out/cert_shard_${{ matrix.shard_id }}.csv
+
+      - name: Upload shard cert
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-switch-cert-${{ matrix.shard_id }}
+          path: /tmp/out/
+          if-no-files-found: error
+
+  aggregate_cert:
+    needs: cert_worker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all cert shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: session-switch-cert-*
+          path: /tmp/certs
+
+      - name: Combine certified leaderboard
+        run: |
+          python3 -c '
+          import csv, glob
+          files = sorted(glob.glob("/tmp/certs/**/cert_shard_*.csv", recursive=True))
+          rows = []
+          for f in files:
+              with open(f) as fp:
+                  rows.extend(list(csv.DictReader(fp)))
+          rows.sort(key=lambda r: float(r["net_msafe"]), reverse=True)
+          with open("/tmp/session_switch_certified_20.csv", "w", newline="") as out:
+              if rows:
+                  w = csv.DictWriter(out, fieldnames=rows[0].keys())
+                  w.writeheader()
+                  w.writerows(rows)
+          for r in rows:
+              print(f"{r[\"uid\"][:36]:37s} {r[\"asset\"]:3s} {r[\"tier\"][:14]:15s} Trds={r[\"trades\"]:>4s} PF={float(r[\"pf\"]):.2f} Msafe={r[\"m_safe\"]:>2s} Net=${float(r[\"net_msafe\"]):>8.0f} Pass={float(r[\"pass_pct\"]):>5.1f}% MedTTP={float(r[\"med_ttp\"]):>4.1f}d BESlip={float(r[\"be_slip_pts\"]):>5.2f}")
+          ' | tee /tmp/cert_summary.txt
+
+      - name: Upload final certified leaderboard
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-switch-certified-leaderboard
+          path: |
+            /tmp/session_switch_certified_20.csv
+            /tmp/cert_summary.txt

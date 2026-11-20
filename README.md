@@ -18,6 +18,13 @@ Parallel backtesting framework for two futures trading strategies on 10 years of
 - **Nitro CRT** (`topstep_strats/strategies/nitro_crt.py`) — wick-sweep / CRT
   strategy that trades reversals after a higher-timeframe level is swept.
 
+## v5.0 Unified Causal Validation & Governance (2026-11-19)
+
+- **11-Stage Validation Engine SOP v5.0:** [docs/FULL_VALIDATION_ENGINE_SOP.md](docs/FULL_VALIDATION_ENGINE_SOP.md) — Mandates `CausalBarView` (`lag <= 0`), 13 automated pre-backtest regression gates, strict `1.50/2.00pt` pessimistic stress slippage, dual `5 Micros` & `1 Mini` baselines, 64-chunk overlapping parallel bar-by-bar execution, and `Jun–Oct 2026` OOS quarantine.
+- **Master 371-Bug Encyclopedia & Checklist:** [docs/MASTER_ONE_STOP_BUG_ENCYCLOPEDIA_AND_CHECKLIST.md](docs/MASTER_ONE_STOP_BUG_ENCYCLOPEDIA_AND_CHECKLIST.md) (structured exports in `reports/MASTER_ONE_STOP_BUG_ENCYCLOPEDIA_AND_CHECKLIST.{parquet,csv,json}`).
+- **Master 646-Strategy & Formula Inventory:** `reports/MASTER_ALL_STRATEGIES_AND_FORMULAS_INVENTORY.parquet` (`.csv`).
+- **Unified C++17 Plug-and-Play Engine & 13-Gate Regression Suite:** `engine_cpp/universal_11stage_plug_and_play_engine.hpp` & `engine_cpp/test_universal_11stage_regression.cpp`.
+
 ## Repository layout
 
 ```

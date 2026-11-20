@@ -1,4 +1,7 @@
 # CHANGE_SUMMARY
+# 2026-10-07  opencode
+#   - Registered session_switch (import, module map, --strategy choices).
+#     Registration only; no change to backtest/metrics/data engine logic.
 # 2026-07-25  kilo
 #   - Created run_chunk.py, the GitHub Actions matrix entry point for one
 #     strategy + date-chunk combination.
@@ -38,7 +41,7 @@ def load_modules():
         from topstep_strats.data import load_market_data, split_by_date
         from topstep_strats.backtest import run_backtest
         from topstep_strats.metrics import calculate_metrics
-        from topstep_strats.strategies import kasen_orb, nitro_crt
+        from topstep_strats.strategies import kasen_orb, nitro_crt, session_switch
         return {
             "load_market_data": load_market_data,
             "split_by_date": split_by_date,
@@ -47,6 +50,7 @@ def load_modules():
             "strategies": {
                 "kasen_orb": kasen_orb,
                 "nitro_crt": nitro_crt,
+                "session_switch": session_switch,
             },
         }
     except Exception as exc:  # pragma: no cover - modules may be written by another agent
@@ -248,7 +252,7 @@ def _synthetic_report(strategy, start_date, end_date, params):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Backtest one strategy over one date chunk.")
-    parser.add_argument("--strategy", required=True, choices=["kasen_orb", "nitro_crt"])
+    parser.add_argument("--strategy", required=True, choices=["kasen_orb", "nitro_crt", "session_switch"])
     parser.add_argument("--start-date", required=True, help="Chunk start (YYYY-MM-DD)")
     parser.add_argument("--end-date", required=True, help="Chunk end (YYYY-MM-DD)")
     parser.add_argument("--output", required=True, help="Path to write JSON result")
