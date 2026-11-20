@@ -149,35 +149,28 @@ int main(int argc, char** argv) {
         const PrecomputedMarketData& md = (c.asset == "NQ") ? md_nq : ((c.asset == "ES") ? md_es : md_ym);
         InstrumentSpec sp = realistic_spec(c.asset);
 
-        // Stage 5 Parameter Sweep around defaults (up to 16 random/grid trials) per (Strategy, Index, Session)
-        auto grid = rs.schema.sample_latin_hypercube(16, 20261120ULL + i);
-        grid.insert(grid.begin(), rs.schema.defaults());
+        // Stage 5 Sweep using built-in engine Stage-5 tuner
+        EngineConfig base_cfg;
+        base_cfg.name = c.uid + "_" + c.asset;
+        base_cfg.inst = sp;
+        base_cfg.contracts_micros = 5;
+        base_cfg.enforce_prop_limits_on_core = false;
+        base_cfg.run_rolling_combines = false;
+        base_cfg.run_full_11_stages = false;
+        base_cfg.ref_nq = &md_nq; base_cfg.ref_es = &md_es; base_cfg.ref_ym = &md_ym;
+        for (int s = 0; s < 4; ++s) base_cfg.allow_session[s] = ((c.sess_mask >> s) & 1) != 0;
 
-        std::vector<double> best_params = rs.schema.defaults();
-        double best_score = -1e18;
-        Full11StageResult best_res;
-        bool has_best = false;
+        Stage5SweepConfig sw_cfg;
+        sw_cfg.max_cartesian_combos = 24;
+        sw_cfg.high_dim_samples = 16;
+        sw_cfg.min_trades_for_champion = 25;
+        sw_cfg.top_k_keep = 1;
 
-        for (const auto& pv : grid) {
-            StrategyPlugin pl = wrap_switch(rs.factory(pv, &sp), c.switch_mode);
-            EngineConfig cfg;
-            cfg.name = c.uid + "_" + c.asset;
-            cfg.inst = sp;
-            cfg.contracts_micros = 5;
-            cfg.enforce_prop_limits_on_core = false;
-            cfg.run_rolling_combines = false;
-            cfg.run_full_11_stages = false;
-            cfg.ref_nq = &md_nq; cfg.ref_es = &md_es; cfg.ref_ym = &md_ym;
-            for (int s = 0; s < 4; ++s) cfg.allow_session[s] = ((c.sess_mask >> s) & 1) != 0;
-
-            auto core = run_chunked_parallel_11stage(md, pl, cfg);
-            double sc = (core.h1.net_pnl > 0 && core.h2.net_pnl > 0) ? (core.net_pnl_5m * std::min(core.profit_factor, 3.0)) : -1e12;
-            if (!has_best || sc > best_score) {
-                best_score = sc;
-                best_params = pv;
-                has_best = true;
-            }
-        }
+        ParameterizedPluginFactory fac = [&](const std::vector<double>& pv, void*) {
+            return wrap_switch(rs.factory(pv, &sp), c.switch_mode);
+        };
+        auto sw = run_stage5_universal_formula_sweep(md, rs.schema, fac, nullptr, base_cfg, sw_cfg, &sp500);
+        std::vector<double> best_params = sw.champion.params.empty() ? rs.schema.defaults() : sw.champion.params;
 
         // Full 11-Stage Certification on Best Tuned Params
         StrategyPlugin best_pl = wrap_switch(rs.factory(best_params, &sp), c.switch_mode);
@@ -185,13 +178,13 @@ int main(int argc, char** argv) {
         cfg.name = c.uid + "_" + c.asset + "_SW" + std::to_string(c.switch_mode);
         cfg.inst = sp;
         cfg.contracts_micros = 5;
-        cfg.dsr_num_trials = static_cast<int>(grid.size());
+        cfg.dsr_num_trials = std::max(1, sw.evaluated_combos);
         cfg.run_rolling_combines = true;
         cfg.run_full_11_stages = true;
         cfg.ref_nq = &md_nq; cfg.ref_es = &md_es; cfg.ref_ym = &md_ym;
         for (int s = 0; s < 4; ++s) cfg.allow_session[s] = ((c.sess_mask >> s) & 1) != 0;
 
-        best_res = run_chunked_parallel_11stage(md, best_pl, cfg, &sp500);
+        Universal11StageResult best_res = run_chunked_parallel_11stage(md, best_pl, cfg);
 
         std::string pstr;
         for (size_t k = 0; k < best_params.size(); ++k) {
