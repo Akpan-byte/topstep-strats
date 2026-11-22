@@ -1,0 +1,24 @@
+name: Wave 14B MR14 4-Way Confluence Sweep (12 Shards)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cell_id: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch 10-year 1m market binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/market_data
+          gh release download data-v3.0-bins --repo ${{ github.repository }} --pattern "*.bin" --dir /tmp/market_data/
+      - name: Compile and run cell ${{ matrix.cell_id }}/12
+        run: |
+          g++ -std=c++20 -O3 -fopenmp -pthread -Iengine_cpp -Isweep_suite sweep_suite/run_wave14b_mr_confluence_gh.cpp -o /tmp/run_w14b
+          /tmp/run_w14b --cell-id ${{ matrix.cell_id }} --data-dir /tmp/market_data
